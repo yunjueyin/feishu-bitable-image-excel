@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>多维表图片导出 Excel</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
+  <script src="./vendor/exceljs.min.js"></script>
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <h1>多维表图片导出 Excel</h1>
+      <p class="subtitle">把多维表每一行的图片字段导出为带图的 Excel（纯前端 / 本地运行）</p>
+    </header>
+
+    <section class="card status-card">
+      <div id="status" class="status status-idle">
+        <span class="dot"></span><span id="statusText">正在初始化…</span>
+      </div>
+      <p id="envHint" class="env-hint hidden">
+        提示：本插件需在飞书多维表里作为「自定义插件」打开。请在飞书开发者后台创建应用 → 添加「多维表格」能力 → 填写本页面网址，并于多维表内启用插件。
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="section-title">字段选择</div>
+      <p class="hint">附件 / 图片字段（📎）会导出为单元格内的图片；其它字段导出为文字。可只勾选需要的列。</p>
+      <div id="fieldList" class="field-list">
+        <div class="placeholder">尚未加载字段，请先在飞书多维表中打开本插件。</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">选项</div>
+      <div class="options">
+        <label class="opt">
+          <span>图片显示宽度（像素）</span>
+          <input id="imgWidth" type="number" min="60" max="400" step="10" value="150" />
+        </label>
+        <label class="opt">
+          <span>并发下载数</span>
+          <input id="concurrency" type="number" min="1" max="20" step="1" value="6" />
+        </label>
+        <label class="opt opt-check">
+          <input id="includeAll" type="checkbox" checked />
+          <span>未勾选字段也一起导出为文字列</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="card actions">
+      <button id="btnLoad" class="btn btn-secondary" disabled>加载数据</button>
+      <button id="btnExport" class="btn btn-primary" disabled>导出 Excel</button>
+      <span id="count" class="count"></span>
+    </section>
+
+    <section class="card">
+      <div class="section-title">进度</div>
+      <div class="progress-wrap">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
