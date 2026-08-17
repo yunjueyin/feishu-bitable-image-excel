@@ -7,6 +7,7 @@ const FIELD_TYPE_ATTACHMENT = 17;
 const FIELD_TYPE_CHECKBOX = 7;
 const SUPPORTED_IMG = ['png', 'jpeg', 'gif', 'bmp'];
 const ImageQualityFallback = { Low: 120, Mid: 360, HIGH: 720, MAX: 1280 };
+const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质量，飞书服务端若支持则返回更大图
 
 // ---------- 状态 ----------
 const state = {
@@ -18,6 +19,7 @@ const state = {
   records: [],       // [{recordId, fields}]
   maxAttach: {},     // fieldId -> 该字段单格最多附件数
   loaded: false,
+  stat: { orig: 0, thumb: 0 }, // 本次导出图片来源统计（诊断 CORS 是否导致全缩略图）
 };
 
 // ---------- 工具 ----------
@@ -277,6 +279,7 @@ async function blobToExcelImage(blob) {
     dataUrl = canvasToDataUrl(bmp, 'image/png');
     ext = 'png';
   }
+  state.stat.orig++;
   return finalizeExcelImage(dataUrl, ext);
 }
 
@@ -293,6 +296,7 @@ async function thumbToExcelImage(b64Str) {
   if (/^data:/i.test(raw)) raw = raw.split(',')[1];
   const mime = detectMime(raw);
   const dataUrl = 'data:' + mime + ';base64,' + raw;
+  state.stat.thumb++;
   return finalizeExcelImage(dataUrl, null);
 }
 
@@ -371,19 +375,24 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   // 3) 仍失败的，用缩略图兜底（base64，不受 CORS 影响，但分辨率较低）
   const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
   if (failedIdx.length) {
-    try {
-      const failedTokens = failedIdx.map((i) => tokens[i]);
-      const thumbs = await state.table.getCellThumbnailUrls(
-        failedTokens, fieldId, recordId, state.ImageQuality.MAX
-      );
+    const failedTokens = failedIdx.map((i) => tokens[i]);
+    let thumbs = null;
+    // 先尝试更高清的缩略图质量（部分环境下飞书服务端支持大于 1280 的值），失败再回退 MAX
+    for (const q of [THUMB_QUALITY_HIGH, state.ImageQuality.MAX]) {
+      try {
+        const r = await state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q);
+        if (r && r.length) { thumbs = r; break; }
+      } catch (e) { /* 试下一档质量 */ }
+    }
+    if (thumbs) {
       await Promise.all(failedIdx.map(async (idx, k) => {
         if (thumbs[k]) {
           try { out[idx] = await thumbToExcelImage(thumbs[k]); }
           catch (e) { /* 忽略单张 */ }
         }
       }));
-    } catch (e) {
-      log('  缩略图兜底也失败：' + e.message, 'err');
+    } else {
+      log('  缩略图兜底也失败（原图与缩略图均不可取）', 'err');
     }
   }
   return out;
@@ -431,6 +440,7 @@ async function exportExcel() {
   const plan = buildColumnPlan(fieldIds);
   const DISPLAY_W = Math.max(60, Math.min(400, parseInt($('#imgWidth').value, 10) || 150));
   const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
+  state.stat = { orig: 0, thumb: 0 };
 
   $('#btnExport').disabled = true;
   $('#btnLoad').disabled = true;
@@ -484,9 +494,11 @@ async function exportExcel() {
             const ratio = img.height / Math.max(1, img.width);
             const dispH = Math.round(DISPLAY_W * ratio);
             const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+            const showW = Math.min(DISPLAY_W, img.width); // 防放大：小图不拉伸到显示宽
+            const showH = Math.round(showW * (img.height / img.width));
             ws.addImage(imgId, {
               tl: { col: ci, row: rowNum - 1 },
-              ext: { width: DISPLAY_W, height: dispH },
+              ext: { width: showW, height: showH },
             });
             maxH = Math.max(maxH, dispH);
           }
@@ -521,7 +533,10 @@ async function exportExcel() {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 
   setProgress(100);
-  log('导出完成：' + a.download, 'ok');
+  log('导出完成：' + a.download + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
+  if (state.stat.orig === 0 && state.stat.thumb > 0) {
+    log('诊断：本次图片均为缩略图（最长边≤1280）。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。要更高清请走飞书服务端 API（需后端代理）。', 'warn');
+  }
   await markExported(state.records);
   $('#btnExport').disabled = false;
   $('#btnLoad').disabled = false;
@@ -627,6 +642,7 @@ async function exportZip() {
   if (!attachFields.length) { log('没有可用的图片字段。', 'warn'); return; }
 
   const namingId = $('#namingField').value;
+  state.stat = { orig: 0, thumb: 0 };
   const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
 
   $('#btnExport').disabled = true;
@@ -690,7 +706,10 @@ async function exportZip() {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 
   setProgress(100);
-  log('导出完成：' + a.download + '（' + fileCount + ' 张图片）', 'ok');
+  log('导出完成：' + a.download + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
+  if (state.stat.orig === 0 && state.stat.thumb > 0) {
+    log('诊断：本次图片均为缩略图（最长边≤1280）。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。要更高清请走飞书服务端 API（需后端代理）。', 'warn');
+  }
   await markExported(state.records);
   $('#btnExport').disabled = false;
   $('#btnExportZip').disabled = false;
