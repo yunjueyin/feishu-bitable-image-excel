@@ -81,6 +81,18 @@ async function ensureExcelJS() {
   }
 }
 
+// ---------- 加载 JSZip（UMD 兜底）----------
+async function ensureJSZip() {
+  if (typeof window.JSZip !== 'undefined') return true;
+  try {
+    await loadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+    return typeof window.JSZip !== 'undefined';
+  } catch (e) {
+    log('JSZip 加载失败：' + e.message, 'err');
+    return false;
+  }
+}
+
 // ---------- 初始化 ----------
 async function init() {
   const okSdk = await loadSdk();
@@ -114,6 +126,7 @@ async function loadFields() {
   }));
   renderFieldList();
   renderMarkOptions();
+  renderNamingOptions();
 }
 
 function renderFieldList() {
@@ -215,6 +228,7 @@ async function loadData() {
     state.loaded = true;
     $('#count').textContent = '共 ' + all.length + ' 行';
     $('#btnExport').disabled = false;
+    $('#btnExportZip').disabled = false;
     setProgress(100);
     log('读取完成，共 ' + all.length + ' 行。', 'ok');
   } catch (e) {
@@ -582,12 +596,115 @@ function renderMarkOptions(selectedId) {
   if (selectedId) sel.value = selectedId;
 }
 
+// 生成「图片命名列」下拉（所有字段均可格式化文本，默认选主键）
+function renderNamingOptions() {
+  const sel = $('#namingField');
+  if (!sel) return;
+  sel.innerHTML = '';
+  let defId = '';
+  for (const f of state.fields) {
+    const o = document.createElement('option');
+    o.value = f.id;
+    o.textContent = f.name + (f.isPrimary ? '（主键）' : '');
+    sel.appendChild(o);
+    if (f.isPrimary) defId = f.id;
+  }
+  if (defId) sel.value = defId;
+}
+
+// ---------- 导出图片 ZIP（按文字列命名）----------
+async function exportZip() {
+  if (!state.loaded || !state.records.length) {
+    log('请先「加载数据」。', 'warn');
+    return;
+  }
+  const JSZip = window.JSZip;
+  if (!JSZip) { log('JSZip 不可用，无法导出 ZIP。', 'err'); return; }
+
+  const fieldIds = getSelectedFieldIds();
+  let attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
+  if (!attachFields.length) attachFields = state.fields.filter((f) => f.isAttachment);
+  if (!attachFields.length) { log('没有可用的图片字段。', 'warn'); return; }
+
+  const namingId = $('#namingField').value;
+  const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
+
+  $('#btnExport').disabled = true;
+  $('#btnExportZip').disabled = true;
+  $('#btnLoad').disabled = true;
+  setProgress(0);
+  log('开始生成图片 ZIP…');
+
+  const zip = new JSZip();
+  const used = new Set();
+  const safe = (raw) => {
+    let s = (raw == null ? '' : String(raw)).trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    if (s.length > 80) s = s.slice(0, 80);
+    return s;
+  };
+  const uniq = (name) => {
+    if (!used.has(name)) { used.add(name); return name; }
+    let i = 2;
+    while (used.has(name + '_' + i)) i++;
+    const u = name + '_' + i; used.add(u); return u;
+  };
+
+  const total = state.records.length;
+  let cursor = 0;
+  let fileCount = 0;
+  async function worker() {
+    while (cursor < total) {
+      const idx = cursor++;
+      const rec = state.records[idx];
+      const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
+      for (const f of attachFields) {
+        const cell = rec.fields && rec.fields[f.id];
+        const imgs = await fetchCellImages(f.id, rec.recordId, cell);
+        for (let k = 0; k < imgs.length; k++) {
+          const img = imgs[k];
+          if (!img) continue;
+          const fname = uniq(base + '__' + safe(f.name) + '_' + (k + 1) + '.' + img.extension);
+          zip.file(fname, img.base64, { base64: true });
+          fileCount++;
+        }
+      }
+      setProgress(Math.round(((idx + 1) / total) * 100));
+      if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < concurrency; i++) workers.push(worker());
+  await Promise.all(workers);
+
+  log('正在打包 ZIP（共 ' + fileCount + ' 张图片）…');
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = (state.tableName || 'export').replace(/[\\/:*?"<>|]/g, '_');
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = safeName + '_图片_' + stamp + '.zip';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+  setProgress(100);
+  log('导出完成：' + a.download + '（' + fileCount + ' 张图片）', 'ok');
+  await markExported(state.records);
+  $('#btnExport').disabled = false;
+  $('#btnExportZip').disabled = false;
+  $('#btnLoad').disabled = false;
+}
+
 // ---------- 绑定 ----------
 window.addEventListener('DOMContentLoaded', () => {
   $('#btnLoad').addEventListener('click', loadData);
   $('#btnExport').addEventListener('click', exportExcel);
+  $('#btnExportZip').addEventListener('click', exportZip);
   ensureExcelJS().then((ok) => {
-    if (!ok) setStatus('ExcelJS 加载失败（导出将不可用）', 'err');
+    if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');
     init();
   });
+  ensureJSZip(); // 后台预载，不阻塞
 });

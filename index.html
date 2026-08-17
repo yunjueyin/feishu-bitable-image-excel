@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="./styles.css" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
+  <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
+  <script src="./vendor/jszip.min.js"></script>
 </head>
 <body>
   <main class="app">
@@ -57,12 +59,17 @@
             <option value="">不标记</option>
           </select>
         </label>
+        <label class="opt">
+          <span>图片命名列（用于 ZIP）</span>
+          <select id="namingField"></select>
+        </label>
       </div>
     </section>
 
     <section class="card actions">
       <button id="btnLoad" class="btn btn-secondary" disabled>加载数据</button>
       <button id="btnExport" class="btn btn-primary" disabled>导出 Excel</button>
+      <button id="btnExportZip" class="btn btn-secondary" disabled>导出图片 ZIP</button>
       <span id="count" class="count"></span>
     </section>
 
