@@ -20,6 +20,7 @@ const state = {
   maxAttach: {},     // fieldId -> 该字段单格最多附件数
   loaded: false,
   stat: { orig: 0, thumb: 0 }, // 本次导出图片来源统计（诊断 CORS 是否导致全缩略图）
+  workerUrl: '', // 原图 CORS 代理 Worker 地址（留空则走缩略图）
 };
 
 // ---------- 工具 ----------
@@ -349,6 +350,7 @@ function loadImageBytes(url) {
 
 // 抓取一个附件字段单元格的全部图片：优先原图（fetch → <img> 跨域），最后才回退缩略图
 async function fetchCellImages(fieldId, recordId, cellVal) {
+  state.workerUrl = ($('#workerUrl').value || '').trim();
   const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
   if (!tokens.length) return [];
   const out = new Array(tokens.length).fill(null);
@@ -360,13 +362,16 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   }
   if (urls.length) {
     const results = await Promise.all(urls.map(async (u) => {
-      // 1) fetch 原图（最清晰）
+      // 1) 若有 CORS 代理 Worker，则走 Worker 取「真·原图」（Worker 服务端转发，带 CORS 头）
+      const proxied = state.workerUrl
+        ? state.workerUrl + (state.workerUrl.indexOf('?') >= 0 ? '&' : '?') + 'u=' + encodeURIComponent(u)
+        : u;
       try {
-        const resp = await fetch(u, { mode: 'cors' });
+        const resp = await fetch(proxied, { mode: 'cors' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         return await blobToExcelImage(await resp.blob());
       } catch (e1) {
-        // 2) 退一步用 <img crossOrigin> 取原图（部分环境 fetch 被拦但 img 可用）
+        // 2) 无 Worker 或 Worker 失败，退一步用 <img crossOrigin> 取原图（部分环境可用）
         try { return await loadImageBytes(u); } catch (e2) { return null; }
       }
     }));

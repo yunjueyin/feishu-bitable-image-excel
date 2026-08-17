@@ -1,0 +1,7 @@
+name = "feishu-img-proxy"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# 免凭证版：Worker 仅做 CORS 代理，转发插件发来的飞书原图下载链接。
+# 无需 APP_ID / APP_SECRET。
+# 如需「Worker 用 tenant_access_token 自己调飞书下载」的进阶版，再补 [vars]/secrets。
