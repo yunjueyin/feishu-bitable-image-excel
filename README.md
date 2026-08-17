@@ -71,7 +71,8 @@ python -m http.server 8000
 - 通过官方 SDK `@lark-base-open/js-sdk` 的桥接读取数据（`bitable.base`）。
 - 附件单元格只含 `token`，需用 `table.getCellAttachmentUrls(tokens, fieldId, recordId)` 换取临时下载 URL。
 - 分页用 `table.getRecordsByPage({ pageSize, pageToken })`，逐页读完所有行。
-- 图片用 `fetch` 取原图并嵌入 Excel（ExcelJS `addImage`）；若 `fetch` 因 CORS 失败，自动改用 `table.getCellThumbnailUrls(..., ImageQuality.MAX)` 返回 base64 缩略图兜底，保证「总能导出」。
+- 图片清晰度优先：先用 `fetch` 取**原图**并嵌入 Excel（ExcelJS `addImage`）；若 `fetch` 因 CORS 被拦，再用 `<img crossOrigin>` 取原图兜底；两者都失败才回退 `table.getCellThumbnailUrls(..., ImageQuality.MAX)` 的 base64 缩略图（最高 1280px，分辨率较低）。只要环境允许跨域，导出的就是原图、不糊。
+- 图片已按实际尺寸设置列宽与行高，贴在对应单元格内（Excel 中图片为浮动对象，默认会随单元格位置对齐，但不会随列宽缩放）。
 - ExcelJS 已随仓库打包（`vendor/exceljs.min.js`），离线也能用。
 
 ## 五、已知限制 / 注意
