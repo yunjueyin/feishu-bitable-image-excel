@@ -289,28 +289,51 @@ function imageDims(dataUrl) {
   });
 }
 
-// 抓取一个附件字段单元格的全部图片（优先原图，失败回退缩略图）
+// 用 <img crossOrigin> 加载原图再画到 canvas 取 base64（绕开 fetch 的 CORS 限制，拿到的是原图）
+function loadImageBytes(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        const dataUrl = c.toDataURL('image/png'); // 若跨域未授权会被污染而抛错
+        resolve(finalizeExcelImage(dataUrl, 'png'));
+      } catch (e) { reject(e); }
+    };
+    img.onerror = () => reject(new Error('img load fail'));
+    img.src = url;
+  });
+}
+
+// 抓取一个附件字段单元格的全部图片：优先原图（fetch → <img> 跨域），最后才回退缩略图
 async function fetchCellImages(fieldId, recordId, cellVal) {
   const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
   if (!tokens.length) return [];
   const out = new Array(tokens.length).fill(null);
-  // 1) 尝试原图
+  let urls = [];
   try {
-    const urls = await state.table.getCellAttachmentUrls(tokens, fieldId, recordId);
-    const results = await Promise.all(urls.map(async (u) => {
-      try {
-        const resp = await fetch(u, { mode: 'cors', cache: 'no-store' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        return await blobToExcelImage(await resp.blob());
-      } catch (e) {
-        return null; // 触发缩略图兜底
-      }
-    }));
-    results.forEach((r, i) => { if (r) out[i] = r; });
+    urls = await state.table.getCellAttachmentUrls(tokens, fieldId, recordId);
   } catch (e) {
     log('  获取附件 URL 失败（将尝试缩略图）：' + e.message, 'warn');
   }
-  // 2) 失败的用缩略图兜底（绕开 CORS）
+  if (urls.length) {
+    const results = await Promise.all(urls.map(async (u) => {
+      // 1) fetch 原图（最清晰）
+      try {
+        const resp = await fetch(u, { mode: 'cors' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return await blobToExcelImage(await resp.blob());
+      } catch (e1) {
+        // 2) 退一步用 <img crossOrigin> 取原图（部分环境 fetch 被拦但 img 可用）
+        try { return await loadImageBytes(u); } catch (e2) { return null; }
+      }
+    }));
+    results.forEach((r, i) => { if (r) out[i] = r; });
+  }
+  // 3) 仍失败的，用缩略图兜底（base64，不受 CORS 影响，但分辨率较低）
   const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
   if (failedIdx.length) {
     try {
@@ -394,10 +417,10 @@ async function exportExcel() {
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).alignment = { vertical: 'middle' };
 
-  // 列宽
+  // 列宽：图片列按显示宽度贴合，让图片正好落在格子里
   plan.forEach((c, i) => {
     const col = ws.getColumn(i + 1);
-    col.width = c.isAttachment ? Math.max(12, DISPLAY_W / 7) : 24;
+    col.width = c.isAttachment ? Math.max(12, (DISPLAY_W - 4) / 7) : 22;
   });
 
   // 限速并发
@@ -438,7 +461,7 @@ async function exportExcel() {
           if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
         }
       }
-      if (maxH > 0) row.height = Math.max(20, maxH * 0.75 + 6);
+      if (maxH > 0) row.height = Math.max(20, maxH * 0.75 + 4);
       setProgress(Math.round(((idx + 1) / total) * 100));
       if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
     }
