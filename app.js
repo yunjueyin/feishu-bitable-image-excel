@@ -4,6 +4,7 @@
 
 // ---------- 常量 ----------
 const FIELD_TYPE_ATTACHMENT = 17;
+const FIELD_TYPE_CHECKBOX = 7;
 const SUPPORTED_IMG = ['png', 'jpeg', 'gif', 'bmp'];
 const ImageQualityFallback = { Low: 120, Mid: 360, HIGH: 720, MAX: 1280 };
 
@@ -112,6 +113,7 @@ async function loadFields() {
     isAttachment: m.type === FIELD_TYPE_ATTACHMENT,
   }));
   renderFieldList();
+  renderMarkOptions();
 }
 
 function renderFieldList() {
@@ -164,13 +166,32 @@ async function loadData() {
   state.maxAttach = {};
   setProgress(0);
   log('开始读取记录…');
+  // 是否仅导出当前视图
+  let viewId;
+  if ($('#onlyCurrentView').checked) {
+    try {
+      const view = await state.bitable.base.getActiveView();
+      viewId = view && view.id;
+      if (viewId) {
+        let vname = viewId;
+        try { vname = await view.getName(); } catch (e) {}
+        log('仅导出当前视图：' + vname);
+      }
+    } catch (e) {
+      log('获取当前视图失败，将导出全部记录：' + e.message, 'warn');
+      viewId = null;
+    }
+  }
+
   try {
     const all = [];
     let pageToken;
     let hasMore = true;
     let page = 0;
     do {
-      const resp = await state.table.getRecordsByPage({ pageSize: 200, pageToken });
+      const resp = await state.table.getRecordsByPage(
+        Object.assign({ pageSize: 200, pageToken }, viewId ? { viewId } : {})
+      );
       const recs = resp.records || [];
       all.push(...recs);
       setProgress(Math.min(95, Math.round((all.length / (resp.total || all.length)) * 95)));
@@ -487,8 +508,78 @@ async function exportExcel() {
 
   setProgress(100);
   log('导出完成：' + a.download, 'ok');
+  await markExported(state.records);
   $('#btnExport').disabled = false;
   $('#btnLoad').disabled = false;
+}
+
+// ---------- 导出后标记「已导出」 ----------
+async function markExported(records) {
+  const sel = $('#markField') ? $('#markField').value : '';
+  if (!sel || !records || !records.length) return; // 不标记
+  let fieldId = sel;
+
+  // 选项：新建「已导出」复选框字段
+  if (sel === '__create__') {
+    try {
+      const res = await state.table.addField({ type: FIELD_TYPE_CHECKBOX, name: '已导出' });
+      fieldId = res && res.id;
+      if (!fieldId) throw new Error('addField 未返回字段 id');
+      const fname = (res && res.name) || '已导出';
+      log('已新建「' + fname + '」复选框字段', 'ok');
+      // 加入字段列表并刷新下拉（不重渲染字段选择，避免清掉用户勾选）
+      state.fields.push({ id: fieldId, name: fname, type: FIELD_TYPE_CHECKBOX, isPrimary: false, isAttachment: false });
+      renderMarkOptions(fieldId);
+      const mf = $('#markField'); if (mf) mf.value = fieldId;
+    } catch (e) {
+      log('新建标记字段失败：' + e.message + '（已跳过标记）', 'err');
+      return;
+    }
+  }
+
+  log('开始标记已导出（共 ' + records.length + ' 行）…');
+  let okCount = 0;
+  const n = records.length;
+  let done = 0, cursor = 0;
+  const conc = 4;
+  async function worker() {
+    while (cursor < n) {
+      const i = cursor++;
+      const rec = records[i];
+      try {
+        await state.table.setCellValue(fieldId, rec.recordId, true);
+        okCount++;
+      } catch (e) {
+        log('  标记失败（第 ' + (i + 1) + ' 行）：' + e.message, 'warn');
+      }
+      done++;
+      setProgress(Math.round((done / n) * 100));
+    }
+  }
+  const workers = [];
+  for (let k = 0; k < conc; k++) workers.push(worker());
+  await Promise.all(workers);
+  log('已标记「已导出」：' + okCount + ' / ' + n + ' 行', okCount === n ? 'ok' : 'warn');
+}
+
+// 生成「导出后标记」下拉（复选框字段 + 新建选项）
+function renderMarkOptions(selectedId) {
+  const sel = $('#markField');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = '不标记';
+  sel.appendChild(none);
+  for (const f of state.fields) {
+    if (f.type !== FIELD_TYPE_CHECKBOX) continue;
+    const o = document.createElement('option');
+    o.value = f.id; o.textContent = f.name + '（复选框）';
+    sel.appendChild(o);
+  }
+  const create = document.createElement('option');
+  create.value = '__create__'; create.textContent = '＋ 新建「已导出」复选框字段';
+  sel.appendChild(create);
+  if (selectedId) sel.value = selectedId;
 }
 
 // ---------- 绑定 ----------
