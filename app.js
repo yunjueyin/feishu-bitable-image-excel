@@ -108,7 +108,7 @@ async function init() {
   const okSdk = await loadSdk();
   if (!okSdk) {
     setStatus('未加载飞书 SDK（请检查网络 / CDN）', 'err');
-    $('#envHint').classList.remove('hidden');
+    log('本插件需作为飞书多维表「自定义插件」打开。', 'err');
     return;
   }
   try {
@@ -130,7 +130,6 @@ async function init() {
     $('#btnLoad').disabled = false;
   } catch (e) {
     setStatus('未在飞书多维表环境中，或无法获取当前表：' + e.message, 'err');
-    $('#envHint').classList.remove('hidden');
     log('若你在普通浏览器打开本页，这是正常的——请作为飞书自定义插件使用。', 'err');
   }
 }
@@ -421,26 +420,7 @@ function resizeImage(dataUrl, targetW, quality) {
   });
 }
 
-// 用 <img crossOrigin> 加载原图再画到 canvas 取 base64（绕开 fetch 的 CORS 限制，拿到的是原图）
-function loadImageBytes(url) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const c = document.createElement('canvas');
-        c.width = img.naturalWidth; c.height = img.naturalHeight;
-        c.getContext('2d').drawImage(img, 0, 0);
-        const dataUrl = c.toDataURL('image/png'); // 若跨域未授权会被污染而抛错
-        resolve(finalizeExcelImage(dataUrl, 'png'));
-      } catch (e) { reject(e); }
-    };
-    img.onerror = () => reject(new Error('img load fail'));
-    img.src = url;
-  });
-}
-
-// 抓取一个附件字段单元格的全部图片：优先原图（fetch → <img> 跨域），最后才回退缩略图
+// 抓取一个附件字段单元格的全部图片：优先 Worker 高清原图（仅当用户填了代理），否则/失败后统一走缩略图
 async function fetchCellImages(fieldId, recordId, cellVal) {
   state.workerUrl = ($('#workerUrl').value || '').trim();
   const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
@@ -452,12 +432,11 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   } catch (e) {
     log('  获取附件 URL 失败（将尝试缩略图）：' + e.message, 'warn');
   }
-  if (urls.length) {
+  // 仅在用户显式填了代理 Worker 时才尝试取「高清原图」；否则（推荐）直接走下方缩略图，
+  // 避免无意义的跨域 fetch 失败刷屏（飞书附件域与 Worker 在你当前网络下均不可达）。
+  if (urls.length && state.workerUrl) {
     const results = await Promise.all(urls.map(async (u) => {
-      // 1) 若有 CORS 代理 Worker，则走 Worker 取「真·原图」（Worker 服务端转发，带 CORS 头）
-      const proxied = state.workerUrl
-        ? state.workerUrl + (state.workerUrl.indexOf('?') >= 0 ? '&' : '?') + 'u=' + encodeURIComponent(u)
-        : u;
+      const proxied = state.workerUrl + (state.workerUrl.indexOf('?') >= 0 ? '&' : '?') + 'u=' + encodeURIComponent(u);
       try {
         const resp = await fetch(proxied, { mode: 'cors' });
         if (!resp.ok) {
@@ -467,9 +446,8 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
         }
         return await blobToExcelImage(await resp.blob());
       } catch (e1) {
-        log('  原图(Worker)失败：' + e1.message, 'warn');
-        // 2) Worker 失败，退一步用 <img crossOrigin> 取原图（部分环境可用）
-        try { return await loadImageBytes(u); } catch (e2) { return null; }
+        log('  原图(Worker)取高清失败，已转缩略图：' + e1.message, 'warn');
+        return null;
       }
     }));
     results.forEach((r, i) => { if (r) out[i] = r; });
@@ -874,7 +852,10 @@ async function testProxy() {
   }
 }
 
-// ---------- 绑定 ----------
+// ---------- 设置弹窗 / 日志折叠 ----------
+function openSettings() { $('#settingsModal').hidden = false; }
+function closeSettings() { $('#settingsModal').hidden = true; }
+
 window.addEventListener('DOMContentLoaded', () => {
   $('#btnLoad').addEventListener('click', loadData);
   $('#btnExport').addEventListener('click', exportExcel);
@@ -884,6 +865,18 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnSelectAll').addEventListener('click', () => selectAllFields(true));
   $('#btnClearAll').addEventListener('click', () => selectAllFields(false));
   $('#btnSelectImg').addEventListener('click', selectImageFields);
+  // 设置弹窗
+  $('#btnSettings').addEventListener('click', openSettings);
+  $('#btnCloseSettings').addEventListener('click', closeSettings);
+  $('#settingsModal').addEventListener('click', (e) => { if (e.target === $('#settingsModal')) closeSettings(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+  // 日志折叠
+  $('#logToggle').addEventListener('click', () => {
+    const panel = $('#logPanel');
+    const collapsed = panel.classList.toggle('collapsed');
+    const chev = $('#logToggle').querySelector('.chev');
+    if (chev) chev.classList.toggle('collapsed', collapsed);
+  });
   $('#workerUrl').addEventListener('change', () => {
     try { localStorage.setItem('feishu_img_worker', $('#workerUrl').value.trim()); } catch (e) {}
   });

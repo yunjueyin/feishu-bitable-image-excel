@@ -13,92 +13,107 @@
 <body>
   <main class="app">
     <header class="app-header">
-      <h1>多维表图片导出 Excel</h1>
-      <p class="subtitle">把飞书多维表每一行的图片字段导出为带图的 Excel，纯前端即开即用</p>
+      <div class="brand">
+        <div class="brand-logo">🖼️</div>
+        <div class="brand-text">
+          <h1>多维表图片导出 Excel</h1>
+          <p class="subtitle">飞书每行图片一键导出带图表格</p>
+        </div>
+      </div>
+      <button id="btnSettings" class="icon-btn" title="导出设置" aria-label="导出设置">⚙</button>
     </header>
 
-    <section class="card status-card">
-      <div id="status" class="status status-idle">
-        <span class="dot"></span><span id="statusText">正在初始化…</span>
+    <div id="status" class="status status-idle">
+      <span class="dot"></span><span id="statusText">正在初始化…</span>
+    </div>
+
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">数据表</span>
+        <span id="count" class="tag"></span>
       </div>
-      <p id="envHint" class="env-hint hidden">
-        提示：本插件需在飞书多维表里作为「自定义插件」打开。请在飞书开发者后台创建应用 → 添加「多维表格」能力 → 填写本页面网址，并于多维表内启用插件。
-      </p>
+      <div class="inline">
+        <select id="tableSelect" class="select hidden"></select>
+        <button id="btnLoad" class="btn btn-soft" disabled>加载</button>
+      </div>
     </section>
 
     <section class="card">
-      <div class="section-title">数据表</div>
-      <div class="table-bar">
-        <select id="tableSelect" class="hidden"></select>
-        <button id="btnLoad" class="btn btn-secondary" disabled>加载数据</button>
-        <span id="count" class="count"></span>
+      <div class="card-head">
+        <span class="card-title">导出字段</span>
+        <div class="field-toolbar">
+          <button type="button" class="link" id="btnSelectAll">全选</button>
+          <button type="button" class="link" id="btnClearAll">清空</button>
+          <button type="button" class="link" id="btnSelectImg">仅图片</button>
+        </div>
       </div>
-    </section>
-
-    <section class="card">
-      <div class="section-title">导出字段</div>
-      <p class="hint">勾选需要导出的字段。图片字段会嵌入单元格，其余字段导出为文字。</p>
-      <div class="field-toolbar">
-        <button type="button" class="btn-link" id="btnSelectAll">全选</button>
-        <button type="button" class="btn-link" id="btnClearAll">清空</button>
-        <button type="button" class="btn-link" id="btnSelectImg">仅图片</button>
-      </div>
+      <p class="muted xs">勾选要导出的列 · 图片列自动嵌入单元格</p>
       <div id="fieldList" class="field-list">
-        <div class="placeholder">尚未加载字段，请在飞书多维表中打开本插件并选择数据表。</div>
+        <div class="placeholder">请先在飞书中打开本插件并选择数据表</div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="section-title">导出设置</div>
-      <div class="options-grid">
-        <label class="opt">
-          <span>图片显示宽度（像素）</span>
-          <input id="imgWidth" type="number" min="60" max="400" step="10" value="150" />
-        </label>
-        <label class="opt opt-wide">
-          <span>图片嵌入方式</span>
-          <select id="imgMode">
-            <option value="float">浮动图片（兼容所有 Excel/WPS，复制单元格不带图）</option>
-            <option value="image">内嵌 IMAGE 公式（需 Excel 365 / 新版 WPS，可复制带走）</option>
-          </select>
-        </label>
-        <label class="opt">
-          <span>并发下载数</span>
-          <input id="concurrency" type="number" min="1" max="20" step="1" value="6" />
-        </label>
-        <label class="opt opt-check">
-          <input id="onlyCurrentView" type="checkbox" />
-          <span>仅导出当前视图</span>
-        </label>
-        <label class="opt">
-          <span>导出后标记「已导出」</span>
-          <select id="markField"><option value="">不标记</option></select>
-        </label>
-        <label class="opt">
-          <span>ZIP 图片命名列</span>
-          <select id="namingField"></select>
-        </label>
-        <label class="opt opt-wide">
-          <span>原图代理（Cloudflare Worker URL，留空则用飞书原图直取）</span>
-          <input id="workerUrl" type="text" placeholder="https://xxx.workers.dev" value="https://feishu-bitable-image-excel.yunjueyin-github-io-pags.workers.dev" />
-        </label>
-      </div>
+    <section class="actions">
+      <button id="btnExport" class="btn btn-primary block" disabled>导出 Excel</button>
+      <button id="btnExportZip" class="btn btn-soft block" disabled>导出图片 ZIP</button>
     </section>
 
-    <section class="card actions">
-      <button id="btnExport" class="btn btn-primary" disabled>导出 Excel</button>
-      <button id="btnExportZip" class="btn btn-secondary" disabled>导出图片 ZIP</button>
-      <button id="btnTestProxy" class="btn btn-ghost">测试代理</button>
-    </section>
-
-    <section class="card">
-      <div class="section-title">进度</div>
-      <div class="progress-wrap">
-        <div id="progressBar" class="progress-bar"></div>
+    <section class="card log-card">
+      <div class="card-head clickable" id="logToggle">
+        <span class="card-title">运行日志</span>
+        <span class="chev">›</span>
       </div>
-      <div id="log" class="log"></div>
+      <div id="logPanel" class="log-panel collapsed">
+        <div class="progress-wrap"><div id="progressBar" class="progress-bar"></div></div>
+        <div id="log" class="log"></div>
+      </div>
     </section>
   </main>
+
+  <!-- 设置弹窗 -->
+  <div class="modal-mask" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <span>导出设置</span>
+        <button class="icon-btn" id="btnCloseSettings" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label for="imgWidth">图片显示宽度（像素）</label>
+          <input id="imgWidth" type="number" min="60" max="400" step="10" value="150" />
+        </div>
+        <div class="form-row">
+          <label for="imgMode">图片嵌入方式</label>
+          <select id="imgMode">
+            <option value="float">浮动图片（全版本兼容，复制不带图）</option>
+            <option value="image">内嵌 IMAGE 公式（Excel 365 / 新版 WPS，可复制）</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="concurrency">并发下载数</label>
+          <input id="concurrency" type="number" min="1" max="20" step="1" value="6" />
+        </div>
+        <div class="form-row inline-row">
+          <label for="onlyCurrentView">仅导出当前视图</label>
+          <input id="onlyCurrentView" type="checkbox" />
+        </div>
+        <div class="form-row">
+          <label for="markField">导出后标记</label>
+          <select id="markField"><option value="">不标记</option></select>
+        </div>
+        <div class="form-row">
+          <label for="namingField">ZIP 命名列</label>
+          <select id="namingField"></select>
+        </div>
+        <div class="form-row col">
+          <label for="workerUrl">原图代理（Cloudflare Worker）</label>
+          <input id="workerUrl" type="text" placeholder="留空则用飞书缩略图（推荐）" />
+          <p class="muted xs">填了才尝试取高清原图；留空直接走飞书缩略图，无需联网代理。</p>
+          <button id="btnTestProxy" class="btn btn-soft sm">测试代理连通性</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>
