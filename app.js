@@ -404,6 +404,23 @@ function imageDims(dataUrl) {
   });
 }
 
+// 把图片缩放（保持比例）到目标宽度，转 JPEG 以减小体积，返回 data URL
+function resizeImage(dataUrl, targetW, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.min(w, targetW));
+      c.height = Math.max(1, Math.round(h * c.width / w));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      try { resolve(c.toDataURL('image/jpeg', quality)); } catch (e) { reject(e); }
+    };
+    img.onerror = () => reject(new Error('resize load fail'));
+    img.src = dataUrl;
+  });
+}
+
 // 用 <img crossOrigin> 加载原图再画到 canvas 取 base64（绕开 fetch 的 CORS 限制，拿到的是原图）
 function loadImageBytes(url) {
   return new Promise((resolve, reject) => {
@@ -525,7 +542,7 @@ async function exportExcel() {
   const plan = buildColumnPlan(fieldIds);
   const DISPLAY_W = Math.max(60, Math.min(400, parseInt($('#imgWidth').value, 10) || 150));
   const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
-  state.stat = { orig: 0, thumb: 0 };
+  state.stat = { orig: 0, thumb: 0, embedded: 0 };
 
   $('#btnExport').disabled = true;
   $('#btnLoad').disabled = true;
@@ -577,18 +594,29 @@ async function exportExcel() {
           const img = imgs[c.imgIndex];
           if (img) {
             const ratio = img.height / Math.max(1, img.width);
-            const showW = Math.min(DISPLAY_W, img.width); // 像素；防放大：小图不拉伸
-            const showH = Math.round(showW * ratio);       // 像素
-            const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            // 双向锚定：图片左上对齐本单元格左上角，右下对齐本单元格右下角，
-            // 并设为「随单元格移动和调整大小」(editAs: twoCell)。
-            // 图片被严格约束在该单元格矩形内，不再漂浮/跨格；
-            // 行高已按图片比例设置，单元格比例≈图片比例，图片不变形。
-            ws.addImage(imgId, {
-              tl: { col: ci, row: rowNum - 1 },
-              br: { col: ci + 1, row: rowNum },
-              editAs: 'twoCell',
-            });
+            const showH = Math.round(DISPLAY_W * ratio); // 像素
+            // 默认把图片作为「单元格内嵌图片」导出（=IMAGE 公式）：
+            // 图片是单元格内容，移动 / 复制 / 排序单元格都会带着图片走（真正的嵌入）。
+            let embedded = false;
+            try {
+              const src = 'data:' + img.extension + ';base64,' + img.base64;
+              const r = await resizeImage(src, DISPLAY_W, 0.85);
+              // Excel 单元格公式长度上限约 32767 字符，超大图降级为浮动图片
+              if (r.length <= 32000) {
+                row.getCell(ci + 1).value = '=IMAGE("' + r + '",1)';
+                embedded = true;
+                state.stat.embedded++;
+              }
+            } catch (e) { /* 落到降级分支 */ }
+            if (!embedded) {
+              // 兜底：浮动图片（随单元格移动缩放，但复制单元格不会带走图片）
+              const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+              ws.addImage(imgId, {
+                tl: { col: ci, row: rowNum - 1 },
+                br: { col: ci + 1, row: rowNum },
+                editAs: 'twoCell',
+              });
+            }
             // 行高（pt）≈ 图片像素高 * 0.75（96dpi），留 4pt 余量
             const needH = showH * 0.75 + 4;
             if (needH > maxRowPt) maxRowPt = needH;
@@ -624,7 +652,11 @@ async function exportExcel() {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 
   setProgress(100);
-  log('导出完成：' + a.download + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
+  let imgTip = '';
+  if (state.stat.embedded > 0) {
+    imgTip = '；图片已以内嵌（IMAGE 公式）写入单元格，复制/移动单元格会带图，请用 Excel 365 或 WPS 新版打开，旧版 Excel 可能显示 #NAME?';
+  }
+  log('导出完成：' + a.download + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + imgTip + '）', 'ok');
   if (state.stat.orig === 0 && state.stat.thumb > 0) {
     log('诊断：本次图片均为缩略图（最长边≤1280）。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。要更高清请走飞书服务端 API（需后端代理）。', 'warn');
   }
