@@ -368,10 +368,15 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
         : u;
       try {
         const resp = await fetch(proxied, { mode: 'cors' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        if (!resp.ok) {
+          let detail = '';
+          try { const j = await resp.json(); detail = (j && j.error) ? ' ' + j.error : ''; } catch (e) {}
+          throw new Error('Worker HTTP ' + resp.status + detail);
+        }
         return await blobToExcelImage(await resp.blob());
       } catch (e1) {
-        // 2) 无 Worker 或 Worker 失败，退一步用 <img crossOrigin> 取原图（部分环境可用）
+        log('  原图(Worker)失败：' + e1.message, 'warn');
+        // 2) Worker 失败，退一步用 <img crossOrigin> 取原图（部分环境可用）
         try { return await loadImageBytes(u); } catch (e2) { return null; }
       }
     }));
@@ -467,10 +472,10 @@ async function exportExcel() {
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).alignment = { vertical: 'middle' };
 
-  // 列宽：图片列按显示宽度贴合，让图片正好落在格子里
+  // 列宽：图片列设为 ≈ DISPLAY_W 像素（字符宽 = 像素/7），让图片完整落在列内
   plan.forEach((c, i) => {
     const col = ws.getColumn(i + 1);
-    col.width = c.isAttachment ? Math.max(12, (DISPLAY_W - 4) / 7) : 22;
+    col.width = c.isAttachment ? Math.max(12, DISPLAY_W / 7) : 22;
   });
 
   // 限速并发
@@ -482,7 +487,7 @@ async function exportExcel() {
       const rec = state.records[idx];
       const rowNum = idx + 2;
       const row = ws.getRow(rowNum);
-      let maxH = 0;
+      let maxRowPt = 0;
       // 预取每个附件字段的图片（每行内并行）
       const attachCache = {};
       const attachFields = [...new Set(plan.filter((c) => c.isAttachment).map((c) => c.fieldId))];
@@ -497,15 +502,16 @@ async function exportExcel() {
           const img = imgs[c.imgIndex];
           if (img) {
             const ratio = img.height / Math.max(1, img.width);
-            const dispH = Math.round(DISPLAY_W * ratio);
+            const showW = Math.min(DISPLAY_W, img.width); // 像素；防放大：小图不拉伸
+            const showH = Math.round(showW * ratio);       // 像素
             const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            const showW = Math.min(DISPLAY_W, img.width); // 防放大：小图不拉伸到显示宽
-            const showH = Math.round(showW * (img.height / img.width));
             ws.addImage(imgId, {
               tl: { col: ci, row: rowNum - 1 },
               ext: { width: showW, height: showH },
             });
-            maxH = Math.max(maxH, dispH);
+            // 行高（pt）≈ 图片像素高 / 1.333，留 4pt 余量，确保图片落在格内
+            const needH = showH / 1.333 + 4;
+            if (needH > maxRowPt) maxRowPt = needH;
           }
         } else {
           const f = state.fields.find((x) => x.id === c.fieldId);
@@ -513,7 +519,7 @@ async function exportExcel() {
           if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
         }
       }
-      if (maxH > 0) row.height = Math.max(20, maxH * 0.75 + 4);
+      if (maxRowPt > 0) row.height = Math.max(20, Math.round(maxRowPt));
       setProgress(Math.round(((idx + 1) / total) * 100));
       if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
     }

@@ -58,7 +58,15 @@ function isAllowedHost(host) {
     host.endsWith('.feishu.cn') ||
     host === 'open.larksuite.com' ||
     host.endsWith('.larksuite.com') ||
-    host.endsWith('.feishucdn.com')
+    host.endsWith('.feishucdn.com') ||
+    // 飞书附件常托管在以下对象存储 / CDN，一并放行
+    host.endsWith('.amazonaws.com') ||
+    host.endsWith('.aliyuncs.com') ||
+    host.endsWith('.myqcloud.com') ||
+    host.endsWith('.qiniucdn.com') ||
+    host.endsWith('.qbox.me') ||
+    host.endsWith('.cloudfront.net') ||
+    host.endsWith('.upaiyun.com')
   );
 }
 
