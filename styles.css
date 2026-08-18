@@ -180,6 +180,8 @@ body {
 .btn-primary:not(:disabled):hover { background: var(--blue-dark); }
 .btn-secondary { background: #eef0f2; color: var(--text); }
 .btn-secondary:not(:disabled):hover { background: #e3e6e9; }
+.btn-ghost { background: transparent; color: var(--blue); border: 1px solid var(--blue); }
+.btn-ghost:hover { background: rgba(51,112,255,.08); }
 .count { color: var(--text-soft); font-size: 13px; }
 
 .progress-wrap {

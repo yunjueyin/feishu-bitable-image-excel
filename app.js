@@ -732,6 +732,28 @@ async function exportZip() {
   $('#btnLoad').disabled = false;
 }
 
+// ---------- 测试代理连通性（飞书 iframe 内直接验 Worker 是否可达） ----------
+async function testProxy() {
+  const url = ($('#workerUrl').value || '').trim();
+  if (!url) { log('请先填写原图代理 Worker 地址', 'err'); return; }
+  setStatus('正在测试代理连通性…', 'idle');
+  log('测试代理：' + url, 'info');
+  const testUrl = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'u=' + encodeURIComponent('https://open.feishu.cn/');
+  try {
+    const resp = await fetch(testUrl, { mode: 'cors' });
+    const txt = await resp.text();
+    let msg = 'Worker 在线（HTTP ' + resp.status + '）：' + txt;
+    if (txt.indexOf('host not allowed') >= 0) msg += ' ⚠️ 白名单需放宽（重新部署最新 worker.js）';
+    else if (txt.indexOf('upstream http 400') >= 0) msg += ' ✅ 代理转发正常，导出应走真原图';
+    log(msg, 'ok');
+    setStatus('代理测试完成', 'ok');
+  } catch (e) {
+    log('代理不可达：' + e.message, 'err');
+    log('→ 多半是飞书 iframe 安全策略拦了 workers.dev（Failed to fetch 即 CSP 拦截），或地址/网络有误。', 'err');
+    setStatus('代理不可达（可能被飞书拦截或地址错误）', 'err');
+  }
+}
+
 // ---------- 绑定 ----------
 window.addEventListener('DOMContentLoaded', () => {
   $('#btnLoad').addEventListener('click', loadData);
