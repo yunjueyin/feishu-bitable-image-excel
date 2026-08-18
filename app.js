@@ -40,8 +40,15 @@ function setStatus(text, kind) {
   $('#status').className = 'status status-' + (kind || 'idle');
 }
 function setProgress(p) {
-  $('#progressBar').style.width = Math.max(0, Math.min(100, p)) + '%';
+  p = Math.max(0, Math.min(100, p));
+  const bar = $('#progressBar');
+  if (bar) bar.style.width = p + '%';
+  const pct = $('#progressPct');
+  if (pct) pct.textContent = Math.round(p) + '%';
 }
+function showProgress() { const b = $('#progressBox'); if (b) b.classList.remove('hidden'); }
+function hideProgress() { const b = $('#progressBox'); if (b) b.classList.add('hidden'); }
+function setProgressCount(text) { const c = $('#progressCount'); if (c) c.textContent = text || ''; }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 function loadScript(src) {
@@ -249,6 +256,7 @@ async function loadData() {
   state.loaded = false;
   state.records = [];
   state.maxAttach = {};
+  showProgress();
   setProgress(0);
   log('开始读取记录…');
   // 是否仅导出当前视图
@@ -308,6 +316,7 @@ async function loadData() {
     setStatus('读取数据失败', 'err');
   } finally {
     $('#btnLoad').disabled = false;
+    hideProgress();
   }
 }
 
@@ -523,6 +532,7 @@ async function exportExcel() {
 
   $('#btnExport').disabled = true;
   $('#btnLoad').disabled = true;
+  showProgress();
   setProgress(0);
   log('开始生成 Excel…');
 
@@ -613,6 +623,7 @@ async function exportExcel() {
       }
       if (maxRowPt > 0) row.height = Math.max(20, Math.round(maxRowPt));
       setProgress(Math.round(((idx + 1) / total) * 100));
+      setProgressCount((idx + 1) + ' / ' + total + ' 行');
       if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
     }
   }
@@ -649,6 +660,8 @@ async function exportExcel() {
     log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
   }
   await markExported(state.records);
+  setProgress(100);
+  hideProgress();
   $('#btnExport').disabled = false;
   $('#btnLoad').disabled = false;
 }
@@ -693,7 +706,6 @@ async function markExported(records) {
         log('  标记失败（第 ' + (i + 1) + ' 行）：' + e.message, 'warn');
       }
       done++;
-      setProgress(Math.round((done / n) * 100));
     }
   }
   const workers = [];
@@ -754,11 +766,12 @@ async function exportZip() {
 
   const namingId = $('#namingField').value;
   state.stat = { orig: 0, thumb: 0 };
-  const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
+  const concurrency = Math.max(1, Math.min(30, parseInt($('#concurrency').value, 10) || 10));
 
   $('#btnExport').disabled = true;
   $('#btnExportZip').disabled = true;
   $('#btnLoad').disabled = true;
+  showProgress();
   setProgress(0);
   log('开始生成图片 ZIP…');
 
@@ -796,6 +809,7 @@ async function exportZip() {
         }
       }
       setProgress(Math.round(((idx + 1) / total) * 100));
+      setProgressCount((idx + 1) + ' / ' + total + ' 行 · ' + fileCount + ' 张图');
       if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
     }
   }
@@ -822,6 +836,8 @@ async function exportZip() {
     log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
   }
   await markExported(state.records);
+  setProgress(100);
+  hideProgress();
   $('#btnExport').disabled = false;
   $('#btnExportZip').disabled = false;
   $('#btnLoad').disabled = false;

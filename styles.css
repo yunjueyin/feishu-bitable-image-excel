@@ -227,6 +227,24 @@ body {
   height: 100%; width: 0%;
   background: var(--blue); transition: width .2s;
 }
+/* 常驻导出进度（状态条下方，导出/加载时显示） */
+.progress-box {
+  background: #fff; border: 1px solid var(--border);
+  border-radius: 12px; padding: 10px 12px; margin-bottom: 14px;
+  box-shadow: 0 1px 3px rgba(20, 40, 80, .06);
+}
+.progress-box.hidden { display: none; }
+.progress-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; color: var(--text-soft); margin-bottom: 7px;
+}
+.progress-meta #progressPct { font-weight: 700; color: var(--blue); font-size: 14px; }
+.progress-meta #progressCount { font-variant-numeric: tabular-nums; }
+.progress-track {
+  height: 8px; background: #eef0f2;
+  border-radius: 6px; overflow: hidden;
+}
+.progress-track .progress-bar { border-radius: 6px; }
 .log {
   font-size: 12px; color: var(--text-soft);
   max-height: 240px; overflow: auto;

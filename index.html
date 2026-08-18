@@ -27,6 +27,14 @@
       <span class="dot"></span><span id="statusText">正在初始化…</span>
     </div>
 
+    <div id="progressBox" class="progress-box hidden">
+      <div class="progress-meta">
+        <span id="progressPct">0%</span>
+        <span id="progressCount"></span>
+      </div>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+    </div>
+
     <section class="card">
       <div class="card-head">
         <span class="card-title">数据表</span>
@@ -87,7 +95,6 @@
         <span class="chev">›</span>
       </div>
       <div id="logPanel" class="log-panel collapsed">
-        <div class="progress-wrap"><div id="progressBar" class="progress-bar"></div></div>
         <div id="log" class="log"></div>
       </div>
     </section>
