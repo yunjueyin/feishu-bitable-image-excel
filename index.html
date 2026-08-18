@@ -20,7 +20,7 @@
           <p class="subtitle">飞书每行图片一键导出带图表格</p>
         </div>
       </div>
-      <button id="btnSettings" class="icon-btn" title="导出设置" aria-label="导出设置">⚙</button>
+      <button id="btnSettings" class="icon-btn" title="更多设置" aria-label="更多设置">⚙</button>
     </header>
 
     <div id="status" class="status status-idle">
@@ -32,10 +32,8 @@
         <span class="card-title">数据表</span>
         <span id="count" class="tag"></span>
       </div>
-      <div class="inline">
-        <select id="tableSelect" class="select hidden"></select>
-        <button id="btnLoad" class="btn btn-soft" disabled>加载</button>
-      </div>
+      <select id="tableSelect" class="select hidden"></select>
+      <p class="muted xs">选择要导出的数据表（切换后请点下方「加载数据」）。</p>
     </section>
 
     <section class="card">
@@ -53,9 +51,27 @@
       </div>
     </section>
 
+    <section class="card">
+      <div class="card-head"><span class="card-title">图片设置</span></div>
+      <div class="form-row inline-row">
+        <label for="imgMode">图片嵌入方式</label>
+        <select id="imgMode" class="mini-select">
+          <option value="float">贴入单元格（推荐·全版本可见）</option>
+          <option value="image">内嵌 IMAGE 公式（Excel 365/新版 WPS 可复制）</option>
+        </select>
+      </div>
+      <div class="form-row inline-row">
+        <label for="imgWidth">图片显示宽度（像素）</label>
+        <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
+      </div>
+      <p class="muted xs">贴入：图片锚定在单元格内，所有 Excel/WPS 可见；内嵌：额外写 IMAGE 公式，Excel 365 或新版 WPS 下复制单元格可带走图片（旧版自动忽略、仍显示贴入图，不会空白）。</p>
+    </section>
+
     <section class="actions">
-      <button id="btnExport" class="btn btn-primary block" disabled>导出 Excel</button>
-      <button id="btnExportZip" class="btn btn-soft block" disabled>导出图片 ZIP</button>
+      <button id="btnLoad" class="btn btn-primary block" disabled>① 加载数据</button>
+      <button id="btnExport" class="btn btn-primary block" disabled>② 导出 Excel</button>
+      <button id="btnExportZip" class="btn btn-soft block" disabled>③ 导出图片 ZIP</button>
+      <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
     <section class="card log-card">
@@ -70,28 +86,17 @@
     </section>
   </main>
 
-  <!-- 设置弹窗 -->
+  <!-- 设置弹窗（仅放高级项） -->
   <div class="modal-mask" id="settingsModal" hidden>
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head">
-        <span>导出设置</span>
+        <span>更多设置</span>
         <button class="icon-btn" id="btnCloseSettings" aria-label="关闭">✕</button>
       </div>
       <div class="modal-body">
-        <div class="form-row">
-          <label for="imgWidth">图片显示宽度（像素）</label>
-          <input id="imgWidth" type="number" min="60" max="400" step="10" value="150" />
-        </div>
-        <div class="form-row">
-          <label for="imgMode">图片嵌入方式</label>
-          <select id="imgMode">
-            <option value="float">浮动图片（全版本兼容，复制不带图）</option>
-            <option value="image">内嵌 IMAGE 公式（Excel 365 / 新版 WPS，可复制）</option>
-          </select>
-        </div>
-        <div class="form-row">
+        <div class="form-row inline-row">
           <label for="concurrency">并发下载数</label>
-          <input id="concurrency" type="number" min="1" max="20" step="1" value="6" />
+          <input id="concurrency" type="number" min="1" max="20" step="1" value="6" class="mini-input" />
         </div>
         <div class="form-row inline-row">
           <label for="onlyCurrentView">仅导出当前视图</label>
