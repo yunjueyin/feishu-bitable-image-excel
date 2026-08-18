@@ -14,7 +14,9 @@ const state = {
   bitable: null,
   ImageQuality: ImageQualityFallback,
   table: null,
+  tableId: '',
   tableName: '',
+  tableMetas: [],    // 当前多维表的所有数据表 [{id, name}]
   fields: [],        // [{id, name, type, isPrimary}]
   records: [],       // [{recordId, fields}]
   maxAttach: {},     // fieldId -> 该字段单格最多附件数
@@ -110,9 +112,19 @@ async function init() {
     return;
   }
   try {
+    // 列出全部数据表，支持用户切换
+    try {
+      const metas = await state.bitable.base.getTableMetaList();
+      state.tableMetas = Array.isArray(metas) ? metas : [];
+    } catch (e) {
+      log('获取表列表失败（将仅使用当前表）：' + e.message, 'warn');
+      state.tableMetas = [];
+    }
     const table = await state.bitable.base.getActiveTable();
     state.table = table;
+    state.tableId = (table && table.id) || '';
     state.tableName = await table.getName();
+    renderTableSelect(state.tableMetas, state.tableId);
     setStatus('已连接：' + state.tableName, 'ok');
     await loadFields();
     $('#btnLoad').disabled = false;
@@ -163,6 +175,43 @@ function renderFieldList() {
       row.appendChild(tag);
     }
     box.appendChild(row);
+  }
+}
+
+function renderTableSelect(metas, currentId) {
+  const sel = $('#tableSelect');
+  if (!sel) return;
+  sel.innerHTML = '';
+  if (!metas || !metas.length) { sel.classList.add('hidden'); return; }
+  for (const m of metas) {
+    const o = document.createElement('option');
+    o.value = m.id; o.textContent = m.name || m.id;
+    sel.appendChild(o);
+  }
+  if (currentId) sel.value = currentId;
+  sel.classList.remove('hidden');
+}
+
+async function switchTable(id) {
+  if (!state.bitable || !id) return;
+  if (id === state.tableId) return;
+  try {
+    setStatus('正在切换数据表…', 'idle');
+    const table = await state.bitable.base.getTableById(id);
+    state.table = table;
+    state.tableId = id;
+    state.tableName = await table.getName();
+    state.loaded = false;
+    state.records = [];
+    $('#btnExport').disabled = true;
+    $('#btnExportZip').disabled = true;
+    $('#count').textContent = '';
+    setStatus('已连接：' + state.tableName, 'ok');
+    await loadFields();
+    log('已切换数据表：' + state.tableName + '（请重新点「加载数据」）', 'ok');
+  } catch (e) {
+    setStatus('切换数据表失败：' + e.message, 'err');
+    log('切换数据表失败：' + e.message, 'err');
   }
 }
 
@@ -510,12 +559,17 @@ async function exportExcel() {
             const showW = Math.min(DISPLAY_W, img.width); // 像素；防放大：小图不拉伸
             const showH = Math.round(showW * ratio);       // 像素
             const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+            // 双向锚定：图片左上对齐本单元格左上角，右下对齐本单元格右下角，
+            // 并设为「随单元格移动和调整大小」(editAs: twoCell)。
+            // 图片被严格约束在该单元格矩形内，不再漂浮/跨格；
+            // 行高已按图片比例设置，单元格比例≈图片比例，图片不变形。
             ws.addImage(imgId, {
               tl: { col: ci, row: rowNum - 1 },
-              ext: { width: showW, height: showH },
+              br: { col: ci + 1, row: rowNum },
+              editAs: 'twoCell',
             });
-            // 行高（pt）≈ 图片像素高 / 1.333，留 4pt 余量，确保图片落在格内
-            const needH = showH / 1.333 + 4;
+            // 行高（pt）≈ 图片像素高 * 0.75（96dpi），留 4pt 余量
+            const needH = showH * 0.75 + 4;
             if (needH > maxRowPt) maxRowPt = needH;
           }
         } else {
@@ -759,6 +813,8 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnLoad').addEventListener('click', loadData);
   $('#btnExport').addEventListener('click', exportExcel);
   $('#btnExportZip').addEventListener('click', exportZip);
+  $('#btnTestProxy').addEventListener('click', testProxy);
+  $('#tableSelect').addEventListener('change', (e) => switchTable(e.target.value));
   $('#workerUrl').addEventListener('change', () => {
     try { localStorage.setItem('feishu_img_worker', $('#workerUrl').value.trim()); } catch (e) {}
   });
