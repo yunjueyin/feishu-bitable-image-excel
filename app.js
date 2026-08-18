@@ -98,6 +98,11 @@ async function ensureJSZip() {
 
 // ---------- 初始化 ----------
 async function init() {
+  // 还原上次填过的 Worker 地址（localStorage 记忆，避免重加载后丢失）
+  try {
+    const saved = localStorage.getItem('feishu_img_worker');
+    if (saved) $('#workerUrl').value = saved;
+  } catch (e) {}
   const okSdk = await loadSdk();
   if (!okSdk) {
     setStatus('未加载飞书 SDK（请检查网络 / CDN）', 'err');
@@ -732,6 +737,9 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnLoad').addEventListener('click', loadData);
   $('#btnExport').addEventListener('click', exportExcel);
   $('#btnExportZip').addEventListener('click', exportZip);
+  $('#workerUrl').addEventListener('change', () => {
+    try { localStorage.setItem('feishu_img_worker', $('#workerUrl').value.trim()); } catch (e) {}
+  });
   ensureExcelJS().then((ok) => {
     if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');
     init();
