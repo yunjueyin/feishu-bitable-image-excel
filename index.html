@@ -55,6 +55,13 @@
           <span>图片显示宽度（像素）</span>
           <input id="imgWidth" type="number" min="60" max="400" step="10" value="150" />
         </label>
+        <label class="opt opt-wide">
+          <span>图片嵌入方式</span>
+          <select id="imgMode">
+            <option value="float">浮动图片（兼容所有 Excel/WPS，复制单元格不带图）</option>
+            <option value="image">内嵌 IMAGE 公式（需 Excel 365 / 新版 WPS，可复制带走）</option>
+          </select>
+        </label>
         <label class="opt">
           <span>并发下载数</span>
           <input id="concurrency" type="number" min="1" max="20" step="1" value="6" />

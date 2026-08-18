@@ -542,6 +542,7 @@ async function exportExcel() {
   const plan = buildColumnPlan(fieldIds);
   const DISPLAY_W = Math.max(60, Math.min(400, parseInt($('#imgWidth').value, 10) || 150));
   const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
+  state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
   state.stat = { orig: 0, thumb: 0, embedded: 0 };
 
   $('#btnExport').disabled = true;
@@ -595,21 +596,31 @@ async function exportExcel() {
           if (img) {
             const ratio = img.height / Math.max(1, img.width);
             const showH = Math.round(DISPLAY_W * ratio); // 像素
-            // 默认把图片作为「单元格内嵌图片」导出（=IMAGE 公式）：
-            // 图片是单元格内容，移动 / 复制 / 排序单元格都会带着图片走（真正的嵌入）。
-            let embedded = false;
-            try {
-              const src = 'data:' + img.extension + ';base64,' + img.base64;
-              const r = await resizeImage(src, DISPLAY_W, 0.85);
-              // Excel 单元格公式长度上限约 32767 字符，超大图降级为浮动图片
-              if (r.length <= 32000) {
-                row.getCell(ci + 1).value = '=IMAGE("' + r + '",1)';
-                embedded = true;
-                state.stat.embedded++;
+            const mode = state.imgMode || 'float';
+            if (mode === 'image') {
+              // 内嵌 IMAGE 公式：图片是单元格内容，移动/复制/排序单元格会带图（需 Excel 365 / 新版 WPS）
+              let embedded = false;
+              try {
+                const src = 'data:' + img.extension + ';base64,' + img.base64;
+                const r = await resizeImage(src, DISPLAY_W, 0.85);
+                // 单元格公式长度上限约 32767 字符，超大图降级为浮动图片
+                if (r.length <= 32000) {
+                  row.getCell(ci + 1).value = { formula: 'IMAGE("' + r + '",1)' };
+                  embedded = true;
+                  state.stat.embedded++;
+                }
+              } catch (e) { /* 落到降级分支 */ }
+              if (!embedded) {
+                // 兜底：浮动图片（随单元格移动缩放，但复制单元格不会带走图片）
+                const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+                ws.addImage(imgId, {
+                  tl: { col: ci, row: rowNum - 1 },
+                  br: { col: ci + 1, row: rowNum },
+                  editAs: 'twoCell',
+                });
               }
-            } catch (e) { /* 落到降级分支 */ }
-            if (!embedded) {
-              // 兜底：浮动图片（随单元格移动缩放，但复制单元格不会带走图片）
+            } else {
+              // 浮动图片（twoCell 双向锚定）：所有 Excel/WPS 都能看到图，但复制单元格不会带走图片
               const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
               ws.addImage(imgId, {
                 tl: { col: ci, row: rowNum - 1 },
@@ -653,8 +664,10 @@ async function exportExcel() {
 
   setProgress(100);
   let imgTip = '';
-  if (state.stat.embedded > 0) {
-    imgTip = '；图片已以内嵌（IMAGE 公式）写入单元格，复制/移动单元格会带图，请用 Excel 365 或 WPS 新版打开，旧版 Excel 可能显示 #NAME?';
+  if (state.imgMode === 'image' && state.stat.embedded > 0) {
+    imgTip = '；图片已用 IMAGE 公式内嵌单元格（复制/移动单元格会带图）。若打开后显示 #NAME? 或乱码，说明你的 Excel/WPS 不支持 IMAGE 函数，请在「导出设置 → 图片嵌入方式」改为「浮动图片」重试。';
+  } else if (state.stat.embedded === 0) {
+    imgTip = '；图片以浮动方式嵌入（twoCell 锚定，所有 Excel/WPS 可见），但复制单元格不会带走图片（Excel 原生限制）。如需复制带走，请把「图片嵌入方式」改为 IMAGE 公式，并用 Excel 365 / 新版 WPS 打开。';
   }
   log('导出完成：' + a.download + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + imgTip + '）', 'ok');
   if (state.stat.orig === 0 && state.stat.thumb > 0) {

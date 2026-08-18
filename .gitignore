@@ -8,3 +8,5 @@ desktop.ini
 
 # 依赖（本插件用 CDN / 本地 vendor，无需 node_modules）
 node_modules/
+dist/
+deploy-package.zip
