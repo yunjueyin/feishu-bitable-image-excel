@@ -78,13 +78,15 @@ python -m http.server 8000
 - 通过官方 SDK `@lark-base-open/js-sdk` 的桥接读取数据（`bitable.base`）。
 - 附件单元格只含 `token`，需用 `table.getCellAttachmentUrls(tokens, fieldId, recordId)` 换取临时下载 URL。
 - 分页用 `table.getRecordsByPage({ pageSize, pageToken })`，逐页读完所有行。
-- 图片清晰度优先：先用 `fetch` 取**原图**并嵌入 Excel（ExcelJS `addImage`）；若 `fetch` 因 CORS 被拦，再用 `<img crossOrigin>` 取原图兜底；两者都失败才回退 `table.getCellThumbnailUrls(..., ImageQuality.MAX)` 的 base64 缩略图（最高 1280px，分辨率较低）。只要环境允许跨域，导出的就是原图、不糊。
+- 图片清晰度（见「图片设置 → 图片质量」）：
+  - **缩略图（默认·最快）**：直接调用 `table.getCellThumbnailUrls(...)` 拿飞书返回的 base64 缩略图（最长边 ≤ 1280px），不跨域、不逐个联网，最快最稳。
+  - **高清原图**：调用 `table.getCellAttachmentUrls(...)` 拿附件直连 URL，本地 `fetch` 取原图嵌入 Excel；若被飞书 CDN 的 CORS 拦截，则自动回退上面的缩略图。整个过程不借助任何代理 / Worker。
 - 图片已按实际尺寸设置列宽与行高，贴在对应单元格内（Excel 中图片为浮动对象，默认会随单元格位置对齐，但不会随列宽缩放）。
 - ExcelJS 已随仓库打包（`vendor/exceljs.min.js`），离线也能用。
 
 ## 五、已知限制 / 注意
 
-- **图片清晰度（重要）**：飞书附件原图存于飞书 CDN，前端用 `fetch` / `<img crossOrigin>` 取像素时会被 CORS 拦截（跨域 canvas 会被污染，无法 `toDataURL`）。因此前端插件**实际只能拿到缩略图**（经 `getCellThumbnailUrls`，最长边 ≤ 1280px）。这是飞书前端 SDK 的硬限制，不是 bug。插件已做两件事缓解：① 尝试请求高于 1280 的缩略图质量（若飞书服务端支持则返回更大图）；② 导出完成后日志会显示「原图 N / 缩略图 M」，若 N=0 即说明原图被 CORS 拦截。要拿到**真·原图分辨率**，必须走飞书服务端 API（用 `tenant_access_token` + 附件下载接口，需自建一个轻量后端 / Cloudflare Worker 做代理），前端无法直接实现。
+- **图片清晰度（重要）**：默认「缩略图」模式下，图片经 `getCellThumbnailUrls` 取飞书返回的 base64（最长边 ≤ 1280px），不跨域、最快最稳。若切到「高清原图」，插件会用 `getCellAttachmentUrls` 拿附件直连 URL 本地 `fetch` 取原图；飞书附件原图存于飞书 CDN，前端 `fetch` 常被 CORS 拦截，此时自动回退缩略图——这是飞书前端 SDK 的硬限制，不是 bug。导出完成后日志会显示「原图 N / 缩略图 M」，若选了原图却 N=0 即说明被 CORS 拦截。要拿到**真·原图分辨率**且稳定可用，需走飞书服务端 API（用 `tenant_access_token` + 附件下载接口，需自建轻量后端代理），前端无法保证。
 - **显示宽度**：导出的图片「显示尺寸」按你设定的宽度缩放，图片数据本身仍是取到的真实分辨率（原图或缩略图），不会被二次压缩；小图不会被拉伸放大（已做防放大）。
 - **高级权限**：若多维表开启高级权限，附件接口可能需要 `extra` 鉴权；插件运行在已授权的飞书环境内，通常已自动处理。
 - **单行多图**：一个单元格里有多个附件时，会在该字段右侧自动多预留几列依次摆放。

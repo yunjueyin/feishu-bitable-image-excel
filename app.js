@@ -21,8 +21,8 @@ const state = {
   records: [],       // [{recordId, fields}]
   maxAttach: {},     // fieldId -> 该字段单格最多附件数
   loaded: false,
-  stat: { orig: 0, thumb: 0 }, // 本次导出图片来源统计（诊断 CORS 是否导致全缩略图）
-  workerUrl: '', // 原图 CORS 代理 Worker 地址（留空则走缩略图）
+  stat: { orig: 0, thumb: 0 }, // 本次导出图片来源统计
+  imgQuality: 'thumb', // thumb=缩略图(最快·推荐) / orig=高清原图(本地直连飞书)
 };
 
 // ---------- 工具 ----------
@@ -100,11 +100,6 @@ async function ensureJSZip() {
 
 // ---------- 初始化 ----------
 async function init() {
-  // 还原上次填过的 Worker 地址（localStorage 记忆，避免重加载后丢失）
-  try {
-    const saved = localStorage.getItem('feishu_img_worker');
-    if (saved) $('#workerUrl').value = saved;
-  } catch (e) {}
   const okSdk = await loadSdk();
   if (!okSdk) {
     setStatus('未加载飞书 SDK（请检查网络 / CDN）', 'err');
@@ -409,9 +404,10 @@ function resizeImage(dataUrl, targetW, quality) {
     const img = new Image();
     img.onload = () => {
       const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+      if (w <= targetW) { resolve(dataUrl); return; } // 已足够小，跳过 canvas 重编码，省 CPU
       const c = document.createElement('canvas');
-      c.width = Math.max(1, Math.min(w, targetW));
-      c.height = Math.max(1, Math.round(h * c.width / w));
+      c.width = targetW;
+      c.height = Math.max(1, Math.round(h * targetW / w));
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
       try { resolve(c.toDataURL('image/jpeg', quality)); } catch (e) { reject(e); }
     };
@@ -420,39 +416,40 @@ function resizeImage(dataUrl, targetW, quality) {
   });
 }
 
-// 抓取一个附件字段单元格的全部图片：优先 Worker 高清原图（仅当用户填了代理），否则/失败后统一走缩略图
+// 带超时的一次性 fetch：避免个别原图 URL 卡住拖慢整批导出（CORS 拦截会在超时前立即失败，不浪费时间）
+function fetchWithTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal, mode: 'cors' }).finally(() => clearTimeout(t));
+}
+
+// 抓取一个附件字段单元格的全部图片：
+//  - 缩略图模式（默认·最快）：直接取飞书缩略图 base64，不跨域、不需要任何代理、不逐个联网
+//  - 高清原图模式：本地直连飞书附件 URL（不借助代理），失败再回退缩略图
 async function fetchCellImages(fieldId, recordId, cellVal) {
-  state.workerUrl = ($('#workerUrl').value || '').trim();
   const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
   if (!tokens.length) return [];
   const out = new Array(tokens.length).fill(null);
-  let urls = [];
-  try {
-    urls = await state.table.getCellAttachmentUrls(tokens, fieldId, recordId);
-  } catch (e) {
-    log('  获取附件 URL 失败（将尝试缩略图）：' + e.message, 'warn');
+
+  if (state.imgQuality === 'orig') {
+    // 高清原图：本地直连飞书附件 URL（无代理）
+    let urls = [];
+    try {
+      urls = await state.table.getCellAttachmentUrls(tokens, fieldId, recordId);
+    } catch (e) { /* 转缩略图兜底 */ }
+    if (urls.length) {
+      const results = await Promise.all(urls.map(async (u) => {
+        try {
+          const resp = await fetchWithTimeout(u, 6000);
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          return await blobToExcelImage(await resp.blob());
+        } catch (e) { return null; } // 取不到原图，留给缩略图兜底（不刷屏）
+      }));
+      results.forEach((r, i) => { if (r) out[i] = r; });
+    }
   }
-  // 仅在用户显式填了代理 Worker 时才尝试取「高清原图」；否则（推荐）直接走下方缩略图，
-  // 避免无意义的跨域 fetch 失败刷屏（飞书附件域与 Worker 在你当前网络下均不可达）。
-  if (urls.length && state.workerUrl) {
-    const results = await Promise.all(urls.map(async (u) => {
-      const proxied = state.workerUrl + (state.workerUrl.indexOf('?') >= 0 ? '&' : '?') + 'u=' + encodeURIComponent(u);
-      try {
-        const resp = await fetch(proxied, { mode: 'cors' });
-        if (!resp.ok) {
-          let detail = '';
-          try { const j = await resp.json(); detail = (j && j.error) ? ' ' + j.error : ''; } catch (e) {}
-          throw new Error('Worker HTTP ' + resp.status + detail);
-        }
-        return await blobToExcelImage(await resp.blob());
-      } catch (e1) {
-        log('  原图(Worker)取高清失败，已转缩略图：' + e1.message, 'warn');
-        return null;
-      }
-    }));
-    results.forEach((r, i) => { if (r) out[i] = r; });
-  }
-  // 3) 仍失败的，用缩略图兜底（base64，不受 CORS 影响，但分辨率较低）
+
+  // 缩略图兜底（或缩略图模式直接走这里）：SDK 直接返回 base64，最快最稳
   const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
   if (failedIdx.length) {
     const failedTokens = failedIdx.map((i) => tokens[i]);
@@ -472,7 +469,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
         }
       }));
     } else {
-      log('  缩略图兜底也失败（原图与缩略图均不可取）', 'err');
+      log('  该单元格原图与缩略图均不可取', 'err');
     }
   }
   return out;
@@ -519,8 +516,9 @@ async function exportExcel() {
   if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
   const plan = buildColumnPlan(fieldIds);
   const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-  const concurrency = Math.max(1, Math.min(20, parseInt($('#concurrency').value, 10) || 6));
+  const concurrency = Math.max(1, Math.min(30, parseInt($('#concurrency').value, 10) || 10));
   state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
+  state.imgQuality = ($('#imgQuality').value || 'thumb'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
   state.stat = { orig: 0, thumb: 0, embedded: 0 };
 
   $('#btnExport').disabled = true;
@@ -647,8 +645,8 @@ async function exportExcel() {
     imgTip = '；图片以浮动方式贴入单元格（全版本可见）；旧版 Excel 复制单元格不会带走图片（Excel 原生限制）。';
   }
   log('导出完成：' + a.download + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + imgTip + '）', 'ok');
-  if (state.stat.orig === 0 && state.stat.thumb > 0) {
-    log('诊断：本次图片均为缩略图（最长边≤1280）。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。要更高清请走飞书服务端 API（需后端代理）。', 'warn');
+  if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
+    log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
   }
   await markExported(state.records);
   $('#btnExport').disabled = false;
@@ -821,34 +819,12 @@ async function exportZip() {
   setProgress(100);
   log('导出完成：' + a.download + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
   if (state.stat.orig === 0 && state.stat.thumb > 0) {
-    log('诊断：本次图片均为缩略图（最长边≤1280）。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。要更高清请走飞书服务端 API（需后端代理）。', 'warn');
+    log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
   }
   await markExported(state.records);
   $('#btnExport').disabled = false;
   $('#btnExportZip').disabled = false;
   $('#btnLoad').disabled = false;
-}
-
-// ---------- 测试代理连通性（飞书 iframe 内直接验 Worker 是否可达） ----------
-async function testProxy() {
-  const url = ($('#workerUrl').value || '').trim();
-  if (!url) { log('请先填写原图代理 Worker 地址', 'err'); return; }
-  setStatus('正在测试代理连通性…', 'idle');
-  log('测试代理：' + url, 'info');
-  const testUrl = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'u=' + encodeURIComponent('https://open.feishu.cn/');
-  try {
-    const resp = await fetch(testUrl, { mode: 'cors' });
-    const txt = await resp.text();
-    let msg = 'Worker 在线（HTTP ' + resp.status + '）：' + txt;
-    if (txt.indexOf('host not allowed') >= 0) msg += ' ⚠️ 白名单需放宽（重新部署最新 worker.js）';
-    else if (txt.indexOf('upstream http 400') >= 0) msg += ' ✅ 代理转发正常，导出应走真原图';
-    log(msg, 'ok');
-    setStatus('代理测试完成', 'ok');
-  } catch (e) {
-    log('代理不可达：' + e.message, 'err');
-    log('→ 多半是飞书 iframe 安全策略拦了 workers.dev（Failed to fetch 即 CSP 拦截），或地址/网络有误。', 'err');
-    setStatus('代理不可达（可能被飞书拦截或地址错误）', 'err');
-  }
 }
 
 // ---------- 设置弹窗 / 日志折叠 ----------
@@ -859,7 +835,6 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnLoad').addEventListener('click', loadData);
   $('#btnExport').addEventListener('click', exportExcel);
   $('#btnExportZip').addEventListener('click', exportZip);
-  $('#btnTestProxy').addEventListener('click', testProxy);
   $('#tableSelect').addEventListener('change', (e) => switchTable(e.target.value));
   $('#btnSelectAll').addEventListener('click', () => selectAllFields(true));
   $('#btnClearAll').addEventListener('click', () => selectAllFields(false));
@@ -875,9 +850,6 @@ window.addEventListener('DOMContentLoaded', () => {
     const collapsed = panel.classList.toggle('collapsed');
     const chev = $('#logToggle').querySelector('.chev');
     if (chev) chev.classList.toggle('collapsed', collapsed);
-  });
-  $('#workerUrl').addEventListener('change', () => {
-    try { localStorage.setItem('feishu_img_worker', $('#workerUrl').value.trim()); } catch (e) {}
   });
   ensureExcelJS().then((ok) => {
     if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');

@@ -54,6 +54,13 @@
     <section class="card">
       <div class="card-head"><span class="card-title">图片设置</span></div>
       <div class="form-row inline-row">
+        <label for="imgQuality">图片质量</label>
+        <select id="imgQuality" class="mini-select">
+          <option value="thumb">缩略图（最快·推荐）</option>
+          <option value="orig">高清原图（直连飞书）</option>
+        </select>
+      </div>
+      <div class="form-row inline-row">
         <label for="imgMode">图片嵌入方式</label>
         <select id="imgMode" class="mini-select">
           <option value="float">贴入单元格（推荐·全版本可见）</option>
@@ -64,7 +71,7 @@
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
       </div>
-      <p class="muted xs">贴入：图片锚定在单元格内，所有 Excel/WPS 可见；内嵌：额外写 IMAGE 公式，Excel 365 或新版 WPS 下复制单元格可带走图片（旧版自动忽略、仍显示贴入图，不会空白）。</p>
+      <p class="muted xs">质量：缩略图由飞书直接返回、不逐个联网，最快最稳；高清原图直连飞书附件（无需代理），但受 CORS 限制可能回退缩略图。嵌入：贴入图所有版本可见；内嵌额外写 IMAGE 公式，Excel 365/新版 WPS 下复制单元格可带走图片。</p>
     </section>
 
     <section class="actions">
@@ -96,7 +103,7 @@
       <div class="modal-body">
         <div class="form-row inline-row">
           <label for="concurrency">并发下载数</label>
-          <input id="concurrency" type="number" min="1" max="20" step="1" value="6" class="mini-input" />
+          <input id="concurrency" type="number" min="1" max="30" step="1" value="10" class="mini-input" />
         </div>
         <div class="form-row inline-row">
           <label for="onlyCurrentView">仅导出当前视图</label>
@@ -109,12 +116,6 @@
         <div class="form-row">
           <label for="namingField">ZIP 命名列</label>
           <select id="namingField"></select>
-        </div>
-        <div class="form-row col">
-          <label for="workerUrl">原图代理（Cloudflare Worker）</label>
-          <input id="workerUrl" type="text" placeholder="留空则用飞书缩略图（推荐）" />
-          <p class="muted xs">填了才尝试取高清原图；留空直接走飞书缩略图，无需联网代理。</p>
-          <button id="btnTestProxy" class="btn btn-soft sm">测试代理连通性</button>
         </div>
       </div>
     </div>
