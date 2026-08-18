@@ -14,7 +14,7 @@
   <main class="app">
     <header class="app-header">
       <h1>多维表图片导出 Excel</h1>
-      <p class="subtitle">把多维表每一行的图片字段导出为带图的 Excel（纯前端 / 本地运行）</p>
+      <p class="subtitle">把飞书多维表每一行的图片字段导出为带图的 Excel，纯前端即开即用</p>
     </header>
 
     <section class="card status-card">
@@ -28,23 +28,29 @@
 
     <section class="card">
       <div class="section-title">数据表</div>
-      <label class="opt">
-        <span>选择数据表</span>
+      <div class="table-bar">
         <select id="tableSelect" class="hidden"></select>
-      </label>
-    </section>
-
-    <section class="card">
-      <div class="section-title">字段选择</div>
-      <p class="hint">附件 / 图片字段（📎）会导出为单元格内的图片；其它字段导出为文字。可只勾选需要的列。</p>
-      <div id="fieldList" class="field-list">
-        <div class="placeholder">尚未加载字段，请先在飞书多维表中打开本插件。</div>
+        <button id="btnLoad" class="btn btn-secondary" disabled>加载数据</button>
+        <span id="count" class="count"></span>
       </div>
     </section>
 
     <section class="card">
-      <div class="section-title">选项</div>
-      <div class="options">
+      <div class="section-title">导出字段</div>
+      <p class="hint">勾选需要导出的字段。图片字段会嵌入单元格，其余字段导出为文字。</p>
+      <div class="field-toolbar">
+        <button type="button" class="btn-link" id="btnSelectAll">全选</button>
+        <button type="button" class="btn-link" id="btnClearAll">清空</button>
+        <button type="button" class="btn-link" id="btnSelectImg">仅图片</button>
+      </div>
+      <div id="fieldList" class="field-list">
+        <div class="placeholder">尚未加载字段，请在飞书多维表中打开本插件并选择数据表。</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">导出设置</div>
+      <div class="options-grid">
         <label class="opt">
           <span>图片显示宽度（像素）</span>
           <input id="imgWidth" type="number" min="60" max="400" step="10" value="200" />
@@ -54,36 +60,28 @@
           <input id="concurrency" type="number" min="1" max="20" step="1" value="6" />
         </label>
         <label class="opt opt-check">
-          <input id="includeAll" type="checkbox" checked />
-          <span>未勾选字段也一起导出为文字列</span>
-        </label>
-        <label class="opt opt-check">
           <input id="onlyCurrentView" type="checkbox" />
-          <span>仅导出当前视图（按飞书当前视图筛选）</span>
+          <span>仅导出当前视图</span>
         </label>
         <label class="opt">
           <span>导出后标记「已导出」</span>
-          <select id="markField">
-            <option value="">不标记</option>
-          </select>
+          <select id="markField"><option value="">不标记</option></select>
         </label>
         <label class="opt">
-          <span>图片命名列（用于 ZIP）</span>
+          <span>ZIP 图片命名列</span>
           <select id="namingField"></select>
         </label>
-        <label class="opt">
-          <span>原图代理（Cloudflare Worker URL，留空则用缩略图）</span>
+        <label class="opt opt-wide">
+          <span>原图代理（Cloudflare Worker URL，留空则用飞书原图直取）</span>
           <input id="workerUrl" type="text" placeholder="https://xxx.workers.dev" value="https://feishu-bitable-image-excel.yunjueyin-github-io-pags.workers.dev" />
         </label>
       </div>
     </section>
 
     <section class="card actions">
-      <button id="btnLoad" class="btn btn-secondary" disabled>加载数据</button>
       <button id="btnExport" class="btn btn-primary" disabled>导出 Excel</button>
       <button id="btnExportZip" class="btn btn-secondary" disabled>导出图片 ZIP</button>
       <button id="btnTestProxy" class="btn btn-ghost">测试代理</button>
-      <span id="count" class="count"></span>
     </section>
 
     <section class="card">

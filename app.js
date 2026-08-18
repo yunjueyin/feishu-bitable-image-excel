@@ -156,26 +156,54 @@ function renderFieldList() {
     box.innerHTML = '<div class="placeholder">该表没有字段。</div>';
     return;
   }
-  for (const f of state.fields) {
-    const row = document.createElement('label');
-    row.className = 'field-item';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = f.isAttachment; // 附件字段默认勾选
-    cb.dataset.fieldId = f.id;
-    const name = document.createElement('span');
-    name.className = 'fname';
-    name.textContent = f.name + (f.isPrimary ? '（主键）' : '');
-    row.appendChild(cb);
-    row.appendChild(name);
-    if (f.isAttachment) {
-      const tag = document.createElement('span');
-      tag.className = 'ftag';
-      tag.textContent = '📎 图片';
-      row.appendChild(tag);
+  const attachments = state.fields.filter((f) => f.isAttachment);
+  const others = state.fields.filter((f) => !f.isAttachment);
+
+  const renderGroup = (title, list, defaultChecked) => {
+    if (!list.length) return;
+    const group = document.createElement('div');
+    group.className = 'field-group';
+    const head = document.createElement('div');
+    head.className = 'field-group-title';
+    head.textContent = title;
+    group.appendChild(head);
+    for (const f of list) {
+      const row = document.createElement('label');
+      row.className = 'field-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = defaultChecked;
+      cb.dataset.fieldId = f.id;
+      const name = document.createElement('span');
+      name.className = 'fname';
+      name.textContent = f.name + (f.isPrimary ? '（主键）' : '');
+      row.appendChild(cb);
+      row.appendChild(name);
+      if (f.isAttachment) {
+        const tag = document.createElement('span');
+        tag.className = 'ftag';
+        tag.textContent = '图片';
+        row.appendChild(tag);
+      }
+      group.appendChild(row);
     }
-    box.appendChild(row);
-  }
+    box.appendChild(group);
+  };
+
+  renderGroup('图片列（嵌入单元格）', attachments, true);
+  renderGroup('文字列', others, false);
+}
+
+function selectAllFields(checked) {
+  document.querySelectorAll('#fieldList input[type=checkbox]').forEach((cb) => (cb.checked = !!checked));
+}
+
+function selectImageFields() {
+  document.querySelectorAll('#fieldList input[type=checkbox]').forEach((cb) => {
+    const fid = cb.dataset.fieldId;
+    const f = state.fields.find((x) => x.id === fid);
+    cb.checked = !!(f && f.isAttachment);
+  });
 }
 
 function renderTableSelect(metas, currentId) {
@@ -216,14 +244,7 @@ async function switchTable(id) {
 }
 
 function getSelectedFieldIds() {
-  const includeAll = $('#includeAll').checked;
-  const checked = new Set(
-    [...document.querySelectorAll('#fieldList input[type=checkbox]:checked')].map((c) => c.dataset.fieldId)
-  );
-  // includeAll：勾选的 + 其它所有字段（作为文字列）
-  return state.fields
-    .filter((f) => checked.has(f.id) || (includeAll && !checked.has(f.id)))
-    .map((f) => f.id);
+  return [...document.querySelectorAll('#fieldList input[type=checkbox]:checked')].map((c) => c.dataset.fieldId);
 }
 
 // ---------- 读取全部记录 ----------
@@ -815,6 +836,9 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnExportZip').addEventListener('click', exportZip);
   $('#btnTestProxy').addEventListener('click', testProxy);
   $('#tableSelect').addEventListener('change', (e) => switchTable(e.target.value));
+  $('#btnSelectAll').addEventListener('click', () => selectAllFields(true));
+  $('#btnClearAll').addEventListener('click', () => selectAllFields(false));
+  $('#btnSelectImg').addEventListener('click', selectImageFields);
   $('#workerUrl').addEventListener('change', () => {
     try { localStorage.setItem('feishu_img_worker', $('#workerUrl').value.trim()); } catch (e) {}
   });
