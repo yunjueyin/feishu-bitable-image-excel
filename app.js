@@ -282,21 +282,24 @@ async function loadData() {
   showProgress();
   setProgress(0);
   log('开始读取记录…');
-  // 是否仅导出当前视图
+  // 默认按当前视图（含筛选/排序结果）导出全部内容；
+  // 仅当用户勾选「忽略筛选/排序 · 导出全部记录」时才拉全部记录
   let viewId;
-  if ($('#onlyCurrentView').checked) {
+  if (!$('#ignoreView').checked) {
     try {
       const view = await state.bitable.base.getActiveView();
       viewId = view && view.id;
       if (viewId) {
         let vname = viewId;
         try { vname = await view.getName(); } catch (e) {}
-        log('仅导出当前视图：' + vname);
+        log('按当前视图导出：' + vname + '（筛选/排序结果将一并导出全部内容）');
       }
     } catch (e) {
       log('获取当前视图失败，将导出全部记录：' + e.message, 'warn');
       viewId = null;
     }
+  } else {
+    log('已忽略视图筛选/排序，导出全部记录');
   }
 
   try {
@@ -414,7 +417,7 @@ async function finalizeExcelImage(dataUrl, forceExt) {
     const m2 = dataUrl.match(/^data:(image\/png);base64,(.*)$/);
     b64 = m2[2]; ext = 'png';
   }
-  const dims = await imageDims(dataUrl);
+  const dims = await imageSize(dataUrl);
   return { base64: b64, extension: ext, width: dims.w, height: dims.h };
 }
 
@@ -428,6 +431,61 @@ function imageDims(dataUrl) {
     img.onerror = () => resolve({ w: 150, h: 120 });
     img.src = dataUrl;
   });
+}
+
+// 从 base64 图片头解析宽高（无需解码整张像素，速度远快于 new Image），用于提速
+function b64ToBytesAt(b64, maxBytes) {
+  const clean = b64.replace(/^data:[^;]+;base64,/, '');
+  const need = Math.min(clean.length, Math.ceil((maxBytes + 4) * 4 / 3));
+  const bin = atob(clean.slice(0, need));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function imageSizeFromBase64(b64) {
+  try {
+    const b = b64ToBytesAt(b64, 512);
+    // PNG
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+      const w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
+      const h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
+      if (w > 0 && h > 0) return { w, h };
+    }
+    // GIF
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) {
+      const w = b[6] | (b[7] << 8);
+      const h = b[8] | (b[9] << 8);
+      if (w > 0 && h > 0) return { w, h };
+    }
+    // BMP
+    if (b[0] === 0x42 && b[1] === 0x4d) {
+      const w = b[18] | (b[19] << 8) | (b[20] << 16) | (b[21] << 24);
+      const h = b[22] | (b[23] << 8) | (b[24] << 16) | (b[25] << 24);
+      if (w > 0 && h > 0) return { w, h };
+    }
+    // JPEG
+    if (b[0] === 0xff && b[1] === 0xd8) {
+      let i = 2;
+      while (i < b.length - 9) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const m = b[i + 1];
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+          const h = (b[i + 5] << 8) | b[i + 6];
+          const w = (b[i + 7] << 8) | b[i + 8];
+          if (w > 0 && h > 0) return { w, h };
+        }
+        const len = (b[i + 2] << 8) | b[i + 3];
+        i += 2 + len;
+      }
+    }
+  } catch (e) { /* 解析失败回退 new Image */ }
+  return null;
+}
+// 优先 header 解析拿尺寸（远快），失败再回退加载图片
+async function imageSize(dataUrl) {
+  const header = imageSizeFromBase64(dataUrl);
+  if (header) return header;
+  return imageDims(dataUrl);
 }
 
 // 把图片缩放（保持比例）到目标宽度，转 JPEG 以减小体积，返回 data URL
@@ -559,6 +617,36 @@ async function exportExcel() {
   setProgress(0);
   log('开始生成 Excel…');
 
+  const total = state.records.length;
+  const attachFields = [...new Set(plan.filter((c) => c.isAttachment).map((c) => c.fieldId))];
+
+  // ===== 阶段一：并发取图（仅 IO，绝不碰 ExcelJS），按行号存入内存 =====
+  // 关键：先取齐所有图片再写表，避免多 worker 并发写 worksheet 内部状态导致图片错位
+  log('阶段一：并发读取图片（' + total + ' 行）…');
+  const imgData = new Array(total);
+  let cursor = 0;
+  async function fetchWorker() {
+    while (cursor < total) {
+      const idx = cursor++;
+      const rec = state.records[idx];
+      const cache = {};
+      await Promise.all(attachFields.map(async (fid) => {
+        const cell = rec.fields && rec.fields[fid];
+        cache[fid] = await fetchCellImages(fid, rec.recordId, cell);
+      }));
+      imgData[idx] = cache;
+      const done = idx + 1;
+      setProgress(Math.round(done / total * 70));
+      setProgressCount(done + ' / ' + total + ' 行取图');
+      if (idx % 20 === 0) log('  取图 ' + done + ' / ' + total + ' 行');
+    }
+  }
+  const fw = [];
+  for (let i = 0; i < concurrency; i++) fw.push(fetchWorker());
+  await Promise.all(fw);
+
+  // ===== 阶段二：单线程顺序写 Excel（彻底消除并发写表竞态） =====
+  log('阶段二：写入表格（' + total + ' 行）…');
   const wb = new ExcelJS.Workbook();
   wb.creator = '多维表图片导出';
   wb.created = new Date();
@@ -580,80 +668,65 @@ async function exportExcel() {
     col.width = c.isAttachment ? Math.max(12, DISPLAY_W / 7) : 22;
   });
 
-  // 限速并发
-  let cursor = 0;
-  const total = state.records.length;
-  async function worker() {
-    while (cursor < total) {
-      const idx = cursor++;
-      const rec = state.records[idx];
-      const rowNum = idx + 2;
-      const row = ws.getRow(rowNum);
-      let maxRowPt = 0;
-      // 预取每个附件字段的图片（每行内并行）
-      const attachCache = {};
-      const attachFields = [...new Set(plan.filter((c) => c.isAttachment).map((c) => c.fieldId))];
-      await Promise.all(attachFields.map(async (fid) => {
-        const cell = rec.fields && rec.fields[fid];
-        attachCache[fid] = await fetchCellImages(fid, rec.recordId, cell);
-      }));
-      for (let ci = 0; ci < plan.length; ci++) {
-        const c = plan[ci];
-        if (c.isAttachment) {
-          const imgs = attachCache[c.fieldId] || [];
-          const img = imgs[c.imgIndex];
-          if (img) {
-            const ratio = img.height / Math.max(1, img.width);
-            const showH = Math.round(DISPLAY_W * ratio); // 像素
-            const mode = state.imgMode || 'float';
-            if (mode === 'image') {
-              // 内嵌模式：先放浮动图片——所有 Excel / WPS 都看得到，绝不会再出现「没有图片」。
-              // 再叠加 IMAGE 公式：Excel 365 / 新版 WPS 会把它渲染成可复制带走的单元格图片；
-              // 旧版忽略公式（仅显示 #NAME? 文本，但下方浮动图仍可见），所以旧版也不会空白。
-              const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-              ws.addImage(imgId, {
-                tl: { col: ci, row: rowNum - 1 },
-                br: { col: ci + 1, row: rowNum },
-                editAs: 'twoCell',
-              });
-              try {
-                const src = 'data:' + img.extension + ';base64,' + img.base64;
-                const r = await resizeImage(src, DISPLAY_W, 0.85);
-                // 单元格公式长度上限约 32767 字符，超大图只保留浮动图（已可见）
-                if (r.length <= 32000) {
-                  row.getCell(ci + 1).value = { formula: 'IMAGE("' + r + '",1)' };
-                  state.stat.embedded++;
-                }
-              } catch (e) { /* 浮动图已保证可见，公式失败无影响 */ }
-            } else {
-              // 浮动图片（twoCell 双向锚定）：所有 Excel/WPS 都能看到图，但复制单元格不会带走图片
-              const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-              ws.addImage(imgId, {
-                tl: { col: ci, row: rowNum - 1 },
-                br: { col: ci + 1, row: rowNum },
-                editAs: 'twoCell',
-              });
-            }
-            // 行高（pt）≈ 图片像素高 * 0.75（96dpi），留 4pt 余量
-            const needH = showH * 0.75 + 4;
-            if (needH > maxRowPt) maxRowPt = needH;
+  for (let idx = 0; idx < total; idx++) {
+    const rec = state.records[idx];
+    const rowNum = idx + 2;
+    const row = ws.getRow(rowNum);
+    let maxRowPt = 0;
+    const attachCache = imgData[idx] || {};
+    for (let ci = 0; ci < plan.length; ci++) {
+      const c = plan[ci];
+      if (c.isAttachment) {
+        const imgs = attachCache[c.fieldId] || [];
+        const img = imgs[c.imgIndex];
+        if (img) {
+          const ratio = img.height / Math.max(1, img.width);
+          const showH = Math.round(DISPLAY_W * ratio); // 像素
+          const mode = state.imgMode || 'float';
+          if (mode === 'image') {
+            // 内嵌模式：先放浮动图片——所有 Excel / WPS 都看得到，绝不会再出现「没有图片」。
+            // 再叠加 IMAGE 公式：Excel 365 / 新版 WPS 会把它渲染成可复制带走的单元格图片；
+            // 旧版忽略公式（仅显示 #NAME? 文本，但下方浮动图仍可见），所以旧版也不会空白。
+            const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+            ws.addImage(imgId, {
+              tl: { col: ci, row: rowNum - 1 },
+              br: { col: ci + 1, row: rowNum },
+              editAs: 'twoCell',
+            });
+            try {
+              const src = 'data:' + img.extension + ';base64,' + img.base64;
+              const r = await resizeImage(src, DISPLAY_W, 0.85);
+              // 单元格公式长度上限约 32767 字符，超大图只保留浮动图（已可见）
+              if (r.length <= 32000) {
+                row.getCell(ci + 1).value = { formula: 'IMAGE("' + r + '",1)' };
+                state.stat.embedded++;
+              }
+            } catch (e) { /* 浮动图已保证可见，公式失败无影响 */ }
+          } else {
+            // 浮动图片（twoCell 双向锚定）：所有 Excel/WPS 都能看到图，但复制单元格不会带走图片
+            const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+            ws.addImage(imgId, {
+              tl: { col: ci, row: rowNum - 1 },
+              br: { col: ci + 1, row: rowNum },
+              editAs: 'twoCell',
+            });
           }
-        } else {
-          const f = state.fields.find((x) => x.id === c.fieldId);
-          row.getCell(ci + 1).value = formatText(rec.fields ? rec.fields[c.fieldId] : undefined);
-          if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
+          // 行高（pt）≈ 图片像素高 * 0.75（96dpi），留 4pt 余量
+          const needH = showH * 0.75 + 4;
+          if (needH > maxRowPt) maxRowPt = needH;
         }
+      } else {
+        const f = state.fields.find((x) => x.id === c.fieldId);
+        row.getCell(ci + 1).value = formatText(rec.fields ? rec.fields[c.fieldId] : undefined);
+        if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
       }
-      if (maxRowPt > 0) row.height = Math.max(20, Math.round(maxRowPt));
-      setProgress(Math.round(((idx + 1) / total) * 100));
-      setProgressCount((idx + 1) + ' / ' + total + ' 行');
-      if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
     }
+    if (maxRowPt > 0) row.height = Math.max(20, Math.round(maxRowPt));
+    const done = idx + 1;
+    setProgress(70 + Math.round(done / total * 30));
+    setProgressCount(done + ' / ' + total + ' 行写入');
+    if (idx % 50 === 0) log('  写入第 ' + done + ' / ' + total + ' 行');
   }
-
-  const workers = [];
-  for (let i = 0; i < concurrency; i++) workers.push(worker());
-  await Promise.all(workers);
 
   log('正在写入文件…');
   const buf = await wb.xlsx.writeBuffer();
@@ -798,6 +871,34 @@ async function exportZip() {
   setProgress(0);
   log('开始生成图片 ZIP…');
 
+  const total = state.records.length;
+
+  // 阶段一：并发取图（仅 IO），按行号存入内存
+  log('阶段一：并发读取图片（' + total + ' 行）…');
+  const imgData = new Array(total);
+  let cursor = 0;
+  async function fetchWorker() {
+    while (cursor < total) {
+      const idx = cursor++;
+      const rec = state.records[idx];
+      const cache = {};
+      await Promise.all(attachFields.map(async (f) => {
+        const cell = rec.fields && rec.fields[f.id];
+        cache[f.id] = await fetchCellImages(f.id, rec.recordId, cell);
+      }));
+      imgData[idx] = cache;
+      const done = idx + 1;
+      setProgress(Math.round(done / total * 80));
+      setProgressCount(done + ' / ' + total + ' 行取图');
+      if (idx % 20 === 0) log('  取图 ' + done + ' / ' + total + ' 行');
+    }
+  }
+  const fw = [];
+  for (let i = 0; i < concurrency; i++) fw.push(fetchWorker());
+  await Promise.all(fw);
+
+  // 阶段二：单线程写 ZIP
+  log('阶段二：打包 ZIP…');
   const zip = new JSZip();
   const used = new Set();
   const safe = (raw) => {
@@ -812,33 +913,26 @@ async function exportZip() {
     const u = name + '_' + i; used.add(u); return u;
   };
 
-  const total = state.records.length;
-  let cursor = 0;
   let fileCount = 0;
-  async function worker() {
-    while (cursor < total) {
-      const idx = cursor++;
-      const rec = state.records[idx];
-      const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
-      for (const f of attachFields) {
-        const cell = rec.fields && rec.fields[f.id];
-        const imgs = await fetchCellImages(f.id, rec.recordId, cell);
-        for (let k = 0; k < imgs.length; k++) {
-          const img = imgs[k];
-          if (!img) continue;
-          const fname = uniq(base + '__' + safe(f.name) + '_' + (k + 1) + '.' + img.extension);
-          zip.file(fname, img.base64, { base64: true });
-          fileCount++;
-        }
+  for (let idx = 0; idx < total; idx++) {
+    const rec = state.records[idx];
+    const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
+    const cache = imgData[idx] || {};
+    for (const f of attachFields) {
+      const imgs = cache[f.id] || [];
+      for (let k = 0; k < imgs.length; k++) {
+        const img = imgs[k];
+        if (!img) continue;
+        const fname = uniq(base + '__' + safe(f.name) + '_' + (k + 1) + '.' + img.extension);
+        zip.file(fname, img.base64, { base64: true });
+        fileCount++;
       }
-      setProgress(Math.round(((idx + 1) / total) * 100));
-      setProgressCount((idx + 1) + ' / ' + total + ' 行 · ' + fileCount + ' 张图');
-      if (idx % 10 === 0) log('  处理第 ' + (idx + 1) + ' / ' + total + ' 行');
     }
+    const done = idx + 1;
+    setProgress(80 + Math.round(done / total * 20));
+    setProgressCount(done + ' / ' + total + ' 行 · ' + fileCount + ' 张图');
+    if (idx % 50 === 0) log('  打包第 ' + done + ' / ' + total + ' 行');
   }
-  const workers = [];
-  for (let i = 0; i < concurrency; i++) workers.push(worker());
-  await Promise.all(workers);
 
   log('正在打包 ZIP（共 ' + fileCount + ' 张图片）…');
   const blob = await zip.generateAsync({ type: 'blob' });
