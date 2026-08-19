@@ -4,7 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>多维表图片导出 Excel</title>
-  <link rel="stylesheet" href="./styles.css?v=20260819b" />
+  <!-- 字体：Inter 渐进增强（英文/数字更现代），被墙自动降级系统字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css?v=20260819c" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -94,9 +98,9 @@
     </section>
 
     <section class="actions">
-      <button id="btnLoad" class="btn btn-primary block" disabled>① 加载数据</button>
-      <button id="btnExport" class="btn btn-primary block" disabled>② 导出 Excel</button>
-      <button id="btnExportZip" class="btn btn-soft block" disabled>③ 导出图片 ZIP</button>
+      <button id="btnLoad" class="btn btn-primary block" disabled><span class="step">1</span>加载数据</button>
+      <button id="btnExport" class="btn btn-primary block" disabled><span class="step">2</span>导出 Excel</button>
+      <button id="btnExportZip" class="btn btn-soft block" disabled><span class="step">3</span>导出图片 ZIP</button>
       <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
@@ -139,6 +143,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260819b"></script>
+  <script type="module" src="./app.js?v=20260819c"></script>
 </body>
 </html>
