@@ -50,6 +50,14 @@ function showProgress() { const b = $('#progressBox'); if (b) b.classList.remove
 function hideProgress() { const b = $('#progressBox'); if (b) b.classList.add('hidden'); }
 function setProgressCount(text) { const c = $('#progressCount'); if (c) c.textContent = text || ''; }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// 带超时的 Promise 包装：超过 ms 即 reject，避免飞书 SDK 调用挂起导致整批导出永久卡死
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('timeout' + (label ? ' ' + label : '') + ' ' + ms + 'ms')), ms);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -519,50 +527,67 @@ function fetchWithTimeout(url, ms) {
 async function fetchCellImages(fieldId, recordId, cellVal) {
   const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
   if (!tokens.length) return [];
-  const out = new Array(tokens.length).fill(null);
+  const empty = () => new Array(tokens.length).fill(null);
 
-  if (state.imgQuality === 'orig') {
-    // 高清原图：本地直连飞书附件 URL（无代理）
-    let urls = [];
-    try {
-      urls = await state.table.getCellAttachmentUrls(tokens, fieldId, recordId);
-    } catch (e) { /* 转缩略图兜底 */ }
-    if (urls.length) {
-      const results = await Promise.all(urls.map(async (u) => {
-        try {
-          const resp = await fetchWithTimeout(u, 6000);
-          if (!resp.ok) throw new Error('HTTP ' + resp.status);
-          return await blobToExcelImage(await resp.blob());
-        } catch (e) { return null; } // 取不到原图，留给缩略图兜底（不刷屏）
-      }));
-      results.forEach((r, i) => { if (r) out[i] = r; });
-    }
-  }
+  const inner = async () => {
+    const out = empty();
 
-  // 缩略图兜底（或缩略图模式直接走这里）：SDK 直接返回 base64，最快最稳
-  const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
-  if (failedIdx.length) {
-    const failedTokens = failedIdx.map((i) => tokens[i]);
-    let thumbs = null;
-    // 先尝试更高清的缩略图质量（部分环境下飞书服务端支持大于 1280 的值），失败再回退 MAX
-    for (const q of [THUMB_QUALITY_HIGH, state.ImageQuality.MAX]) {
+    if (state.imgQuality === 'orig') {
+      // 高清原图：本地直连飞书附件 URL（无代理）
+      let urls = [];
       try {
-        const r = await state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q);
-        if (r && r.length) { thumbs = r; break; }
-      } catch (e) { /* 试下一档质量 */ }
+        urls = await withTimeout(
+          state.table.getCellAttachmentUrls(tokens, fieldId, recordId),
+          8000, 'getCellAttachmentUrls'
+        );
+      } catch (e) { /* 转缩略图兜底 */ }
+      if (urls && urls.length) {
+        const results = await Promise.all(urls.map(async (u) => {
+          try {
+            const resp = await fetchWithTimeout(u, 6000);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            return await blobToExcelImage(await resp.blob());
+          } catch (e) { return null; } // 取不到原图，留给缩略图兜底（不刷屏）
+        }));
+        results.forEach((r, i) => { if (r) out[i] = r; });
+      }
     }
-    if (thumbs) {
-      await Promise.all(failedIdx.map(async (idx, k) => {
-        if (thumbs[k]) {
-          try { out[idx] = await thumbToExcelImage(thumbs[k]); }
-          catch (e) { /* 忽略单张 */ }
-        }
-      }));
-    } else {
-      log('  该单元格原图与缩略图均不可取', 'err');
+
+    // 缩略图兜底（或缩略图模式直接走这里）：SDK 直接返回 base64，最快最稳
+    const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+    if (failedIdx.length) {
+      const failedTokens = failedIdx.map((i) => tokens[i]);
+      let thumbs = null;
+      // 先尝试更高清的缩略图质量（部分环境下飞书服务端支持大于 1280 的值），失败再回退 MAX
+      for (const q of [THUMB_QUALITY_HIGH, state.ImageQuality.MAX]) {
+        try {
+          const r = await withTimeout(
+            state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
+            8000, 'getCellThumbnailUrls'
+          );
+          if (r && r.length) { thumbs = r; break; }
+        } catch (e) { /* 试下一档质量 */ }
+      }
+      if (thumbs) {
+        await Promise.all(failedIdx.map(async (idx, k) => {
+          if (thumbs[k]) {
+            try { out[idx] = await thumbToExcelImage(thumbs[k]); }
+            catch (e) { /* 忽略单张 */ }
+          }
+        }));
+      } else {
+        log('  该单元格原图与缩略图均不可取', 'err');
+      }
     }
-  }
-  return out;
+    return out;
+  };
+
+  // 整体超时兜底：单个单元格取图最多 20s，超时则放弃该单元格图片（返回空），
+  // 避免一个单元格的飞书接口挂起把整批导出拖死、进度条永远卡住
+  return withTimeout(inner(), 20000, 'fetchCellImages').catch((e) => {
+    log('  单格取图超时已跳过（' + tokens.length + ' 张）', 'warn');
+    return empty();
+  });
 }
 
 // ---------- 文字单元格格式化 ----------
@@ -601,6 +626,8 @@ async function exportExcel() {
   }
   const ExcelJS = window.ExcelJS;
   if (!ExcelJS) { log('ExcelJS 不可用，无法导出。', 'err'); return; }
+
+  try {
 
   const fieldIds = getSelectedFieldIds();
   if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
@@ -754,11 +781,20 @@ async function exportExcel() {
   if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
     log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
   }
-  await markExported(state.records);
+  try {
+    await markExported(state.records);
+  } catch (e) {
+    log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+  }
   setProgress(100);
-  hideProgress();
-  $('#btnExport').disabled = false;
-  $('#btnLoad').disabled = false;
+  } catch (e) {
+    log('导出异常中断：' + (e && e.message ? e.message : e), 'err');
+    setStatus('导出失败（详见运行日志）', 'err');
+  } finally {
+    $('#btnExport').disabled = false;
+    $('#btnLoad').disabled = false;
+    hideProgress();
+  }
 }
 
 // ---------- 导出后标记「已导出」 ----------
@@ -795,7 +831,7 @@ async function markExported(records) {
       const i = cursor++;
       const rec = records[i];
       try {
-        await state.table.setCellValue(fieldId, rec.recordId, true);
+        await withTimeout(state.table.setCellValue(fieldId, rec.recordId, true), 6000, 'setCellValue');
         okCount++;
       } catch (e) {
         log('  标记失败（第 ' + (i + 1) + ' 行）：' + e.message, 'warn');
@@ -853,6 +889,8 @@ async function exportZip() {
   }
   const JSZip = window.JSZip;
   if (!JSZip) { log('JSZip 不可用，无法导出 ZIP。', 'err'); return; }
+
+  try {
 
   const fieldIds = getSelectedFieldIds();
   let attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
@@ -951,12 +989,21 @@ async function exportZip() {
   if (state.stat.orig === 0 && state.stat.thumb > 0) {
     log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
   }
-  await markExported(state.records);
+  try {
+    await markExported(state.records);
+  } catch (e) {
+    log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+  }
   setProgress(100);
-  hideProgress();
-  $('#btnExport').disabled = false;
-  $('#btnExportZip').disabled = false;
-  $('#btnLoad').disabled = false;
+  } catch (e) {
+    log('ZIP 导出异常中断：' + (e && e.message ? e.message : e), 'err');
+    setStatus('导出失败（详见运行日志）', 'err');
+  } finally {
+    $('#btnExport').disabled = false;
+    $('#btnExportZip').disabled = false;
+    $('#btnLoad').disabled = false;
+    hideProgress();
+  }
 }
 
 // ---------- 设置弹窗 / 日志折叠 ----------
