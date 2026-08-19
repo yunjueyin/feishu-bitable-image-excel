@@ -192,7 +192,7 @@ function renderFieldList() {
   };
 
   renderGroup('图片列（嵌入单元格）', attachments, true);
-  renderGroup('文字列', others, false);
+  renderGroup('文字列', others, true);
   updateFieldSummary();
 }
 
@@ -662,17 +662,28 @@ async function exportExcel() {
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).alignment = { vertical: 'middle' };
 
-  // 列宽：图片列设为 ≈ DISPLAY_W 像素（字符宽 = 像素/7），让图片完整落在列内
+  // 列宽：图片列固定 ≈ DISPLAY_W 像素；文字列约 154 像素（仅影响文字显示，图片用绝对锚定不受其限）
   plan.forEach((c, i) => {
     const col = ws.getColumn(i + 1);
     col.width = c.isAttachment ? Math.max(12, DISPLAY_W / 7) : 22;
   });
 
+  // 表头行高度固定，作为数据行图片绝对定位 y 的起点基准
+  const HEAD_PX = 19;
+  ws.getRow(1).height = Math.round(HEAD_PX * 0.75);
+  // 绝对锚定：每张图按 EMU 精确控制显示尺寸，严格等比例，不受行高拉伸变形
+  const EMU = 9525;
+  const colPx = plan.map((c) => (c.isAttachment ? DISPLAY_W : 154));
+  const colX = [];
+  let accX = 0;
+  for (let i = 0; i < colPx.length; i++) { colX.push(accX * EMU); accX += colPx[i]; }
+  let yPx = HEAD_PX;
+
   for (let idx = 0; idx < total; idx++) {
     const rec = state.records[idx];
     const rowNum = idx + 2;
     const row = ws.getRow(rowNum);
-    let maxRowPt = 0;
+    let maxRowPx = 18;
     const attachCache = imgData[idx] || {};
     for (let ci = 0; ci < plan.length; ci++) {
       const c = plan[ci];
@@ -680,40 +691,26 @@ async function exportExcel() {
         const imgs = attachCache[c.fieldId] || [];
         const img = imgs[c.imgIndex];
         if (img) {
-          const ratio = img.height / Math.max(1, img.width);
-          const showH = Math.round(DISPLAY_W * ratio); // 像素
-          const mode = state.imgMode || 'float';
-          if (mode === 'image') {
-            // 内嵌模式：先放浮动图片——所有 Excel / WPS 都看得到，绝不会再出现「没有图片」。
-            // 再叠加 IMAGE 公式：Excel 365 / 新版 WPS 会把它渲染成可复制带走的单元格图片；
-            // 旧版忽略公式（仅显示 #NAME? 文本，但下方浮动图仍可见），所以旧版也不会空白。
-            const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            ws.addImage(imgId, {
-              tl: { col: ci, row: rowNum - 1 },
-              br: { col: ci + 1, row: rowNum },
-              editAs: 'twoCell',
-            });
+          // 显示宽固定 DISPLAY_W，高严格按原图比例计算 → 等比例，绝不拉伸变形
+          const Wd = DISPLAY_W;
+          const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
+          const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+          if (state.imgMode === 'image') {
+            // 浮动打底（绝对锚定·精确等比）+ 叠加 IMAGE 公式（Excel 365/新版 WPS 可复制带走）
+            ws.addImage(imgId, { type: 'absoluteAnchor', x: colX[ci], y: yPx * EMU, width: Wd * EMU, height: Hd * EMU });
             try {
               const src = 'data:' + img.extension + ';base64,' + img.base64;
               const r = await resizeImage(src, DISPLAY_W, 0.85);
-              // 单元格公式长度上限约 32767 字符，超大图只保留浮动图（已可见）
               if (r.length <= 32000) {
                 row.getCell(ci + 1).value = { formula: 'IMAGE("' + r + '",1)' };
                 state.stat.embedded++;
               }
             } catch (e) { /* 浮动图已保证可见，公式失败无影响 */ }
           } else {
-            // 浮动图片（twoCell 双向锚定）：所有 Excel/WPS 都能看到图，但复制单元格不会带走图片
-            const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            ws.addImage(imgId, {
-              tl: { col: ci, row: rowNum - 1 },
-              br: { col: ci + 1, row: rowNum },
-              editAs: 'twoCell',
-            });
+            // 浮动图片（绝对锚定·精确等比）：所有 Excel/WPS 都能看到图，且复制单元格不会带走图片
+            ws.addImage(imgId, { type: 'absoluteAnchor', x: colX[ci], y: yPx * EMU, width: Wd * EMU, height: Hd * EMU });
           }
-          // 行高（pt）≈ 图片像素高 * 0.75（96dpi），留 4pt 余量
-          const needH = showH * 0.75 + 4;
-          if (needH > maxRowPt) maxRowPt = needH;
+          if (Hd > maxRowPx) maxRowPx = Hd;
         }
       } else {
         const f = state.fields.find((x) => x.id === c.fieldId);
@@ -721,7 +718,9 @@ async function exportExcel() {
         if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
       }
     }
-    if (maxRowPt > 0) row.height = Math.max(20, Math.round(maxRowPt));
+    // 行高（pt）容纳文字；图片用绝对 y 定位，不受行高拉伸
+    row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 2);
+    yPx += maxRowPx;
     const done = idx + 1;
     setProgress(70 + Math.round(done / total * 30));
     setProgressCount(done + ' / ' + total + ' 行写入');
