@@ -193,10 +193,12 @@ function renderFieldList() {
 
   renderGroup('图片列（嵌入单元格）', attachments, true);
   renderGroup('文字列', others, false);
+  updateFieldSummary();
 }
 
 function selectAllFields(checked) {
   document.querySelectorAll('#fieldList input[type=checkbox]').forEach((cb) => (cb.checked = !!checked));
+  updateFieldSummary();
 }
 
 function selectImageFields() {
@@ -205,6 +207,27 @@ function selectImageFields() {
     const f = state.fields.find((x) => x.id === fid);
     cb.checked = !!(f && f.isAttachment);
   });
+  updateFieldSummary();
+}
+
+// 折叠下拉：切换展开/收起，并同步箭头与无障碍状态
+function toggleFieldDropdown() {
+  const dd = $('#fieldDropdown');
+  if (!dd) return;
+  const collapsed = dd.classList.toggle('collapsed');
+  const chev = $('#fieldToggle').querySelector('.chev');
+  if (chev) chev.classList.toggle('collapsed', collapsed);
+  $('#fieldToggle').setAttribute('aria-expanded', String(!collapsed));
+}
+
+// 头部摘要：显示「已选 X / N 列」或「共 N 列 · 未选」
+function updateFieldSummary() {
+  const sum = $('#fieldSummary');
+  if (!sum) return;
+  const total = state.fields.length;
+  if (!total) { sum.textContent = '无字段'; return; }
+  const checked = document.querySelectorAll('#fieldList input[type=checkbox]:checked').length;
+  sum.textContent = checked === 0 ? ('共 ' + total + ' 列 · 未选') : ('已选 ' + checked + ' / ' + total + ' 列');
 }
 
 function renderTableSelect(metas, currentId) {
@@ -855,6 +878,10 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnSelectAll').addEventListener('click', () => selectAllFields(true));
   $('#btnClearAll').addEventListener('click', () => selectAllFields(false));
   $('#btnSelectImg').addEventListener('click', selectImageFields);
+  // 导出字段折叠下拉
+  $('#fieldToggle').addEventListener('click', toggleFieldDropdown);
+  $('#fieldToggle').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFieldDropdown(); } });
+  $('#fieldList').addEventListener('change', updateFieldSummary);
   // 设置弹窗
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnCloseSettings').addEventListener('click', closeSettings);
