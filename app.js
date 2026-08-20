@@ -569,7 +569,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       try {
         urls = await withTimeout(
           state.table.getCellAttachmentUrls(tokens, fieldId, recordId),
-          5000, 'getCellAttachmentUrls'
+          8000, 'getCellAttachmentUrls'
         );
       } catch (e) { /* 转缩略图兜底 */ }
       if (urls && urls.length) {
@@ -589,12 +589,12 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     if (failedIdx.length) {
       const failedTokens = failedIdx.map((i) => tokens[i]);
       let thumbs = null;
-      // 缩略图质量：飞书 MAX=1280；先试最高质量，成功即停（不逐级降级浪费时间）
-      for (const q of [state.ImageQuality.MAX]) {
+      // 缩略图质量：先试 MAX(1280)，超时或返回空则降级 HIGH(720)——MAX 在飞书侧通常需 5-8s
+      for (const q of [state.ImageQuality.MAX, state.ImageQuality.HIGH]) {
         try {
           const r = await withTimeout(
             state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
-            5000, 'getCellThumbnailUrls'
+            8000, 'getCellThumbnailUrls'
           );
           if (r && r.length) { thumbs = r; break; }
           else { log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn'); }
