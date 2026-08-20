@@ -276,7 +276,9 @@ async function switchTable(id) {
 }
 
 function getSelectedFieldIds() {
-  return [...document.querySelectorAll('#fieldList input[type=checkbox]:checked')].map((c) => c.dataset.fieldId);
+  // 按表格原始字段顺序返回勾选项（UI 分组展示不影响导出列顺序，保证与表格列序一致）
+  const checked = new Set([...document.querySelectorAll('#fieldList input[type=checkbox]:checked')].map((c) => c.dataset.fieldId));
+  return state.fields.filter((f) => checked.has(f.id)).map((f) => f.id);
 }
 
 // ---------- 读取全部记录 ----------
@@ -380,8 +382,8 @@ function canvasToDataUrl(bmp, type) {
   return c.toDataURL(type);
 }
 
-// 将 Blob 转成 Excel 可直接使用的 {base64, extension, width, height}
-async function blobToExcelImage(blob) {
+// 将 Blob 转成 Excel 可直接使用的 {base64, extension, width, height}（纯转换，不计数）
+async function blobToImageResult(blob) {
   const mime = blob.type || 'image/png';
   let ext = mimeToExt(mime);
   let dataUrl;
@@ -392,11 +394,16 @@ async function blobToExcelImage(blob) {
     dataUrl = canvasToDataUrl(bmp, 'image/png');
     ext = 'png';
   }
-  state.stat.orig++;
   return finalizeExcelImage(dataUrl, ext);
 }
+// 原图：Blob → Excel 图片（计 orig）
+async function blobToExcelImage(blob) {
+  const r = await blobToImageResult(blob);
+  state.stat.orig++;
+  return r;
+}
 
-// 缩略图返回的是 base64 字符串（可能带 data: 前缀，也可能不带）
+// 缩略图返回可能是：base64 字符串 / data URL / http(s) URL / 对象({url|thumbnail|data|base64})
 function detectMime(b64) {
   if (/^iVBORw0KGgo/.test(b64)) return 'image/png';
   if (/^\/9j\//.test(b64)) return 'image/jpeg';
@@ -404,9 +411,32 @@ function detectMime(b64) {
   if (/^Qk/.test(b64)) return 'image/bmp';
   return 'image/png';
 }
-async function thumbToExcelImage(b64Str) {
-  let raw = b64Str;
+function extractThumbStr(item) {
+  if (item == null) return '';
+  if (typeof item === 'string') return item;
+  if (typeof item === 'object') return item.url || item.thumbnail || item.data || item.base64 || item.downloadUrl || '';
+  return String(item);
+}
+async function thumbToExcelImage(item) {
+  const s = extractThumbStr(item);
+  if (!s) return null;
+  // http(s) URL：fetch 取像素（飞书部分版本缩略图返回下载链接而非 base64）
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const resp = await fetchWithTimeout(s, 8000);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const r = await blobToImageResult(await resp.blob());
+      state.stat.thumb++;
+      return r;
+    } catch (e) {
+      state.stat.thumb++;
+      return null;
+    }
+  }
+  // base64 字符串（可能带 data: 前缀）
+  let raw = s;
   if (/^data:/i.test(raw)) raw = raw.split(',')[1];
+  if (!raw) return null;
   const mime = detectMime(raw);
   const dataUrl = 'data:' + mime + ';base64,' + raw;
   state.stat.thumb++;
@@ -558,8 +588,8 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     if (failedIdx.length) {
       const failedTokens = failedIdx.map((i) => tokens[i]);
       let thumbs = null;
-      // 先尝试更高清的缩略图质量（部分环境下飞书服务端支持大于 1280 的值），失败再回退 MAX
-      for (const q of [THUMB_QUALITY_HIGH, state.ImageQuality.MAX]) {
+      // 缩略图质量：飞书 MAX=1280；不再尝试 2560（超出 SDK 上限必失败，且每格白等 8s 超时——这是导出又慢又取不到图的主因）
+      for (const q of [state.ImageQuality.MAX, state.ImageQuality.HIGH]) {
         try {
           const r = await withTimeout(
             state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
@@ -568,9 +598,16 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           if (r && r.length) { thumbs = r; break; }
         } catch (e) { /* 试下一档质量 */ }
       }
+      // 诊断：首次打印缩略图返回格式，便于确认 SDK 返回的是 base64 还是 URL
+      if (thumbs && thumbs[0] != null && !state._thumbLogged) {
+        state._thumbLogged = true;
+        const sm = thumbs[0];
+        const t = typeof sm === 'string' ? sm : (sm && (sm.url || sm.thumbnail || JSON.stringify(sm))) || String(sm);
+        log('缩略图返回格式样例（' + (typeof sm) + '）：' + String(t).slice(0, 60));
+      }
       if (thumbs) {
         await Promise.all(failedIdx.map(async (idx, k) => {
-          if (thumbs[k]) {
+          if (thumbs[k] != null) {
             try { out[idx] = await thumbToExcelImage(thumbs[k]); }
             catch (e) { /* 忽略单张 */ }
           }
