@@ -569,13 +569,13 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       try {
         urls = await withTimeout(
           state.table.getCellAttachmentUrls(tokens, fieldId, recordId),
-          8000, 'getCellAttachmentUrls'
+          5000, 'getCellAttachmentUrls'
         );
       } catch (e) { /* 转缩略图兜底 */ }
       if (urls && urls.length) {
         const results = await Promise.all(urls.map(async (u) => {
           try {
-            const resp = await fetchWithTimeout(u, 6000);
+            const resp = await fetchWithTimeout(u, 4000);
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             return await blobToExcelImage(await resp.blob());
           } catch (e) { return null; } // 取不到原图，留给缩略图兜底（不刷屏）
@@ -589,12 +589,12 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     if (failedIdx.length) {
       const failedTokens = failedIdx.map((i) => tokens[i]);
       let thumbs = null;
-      // 缩略图质量：飞书 MAX=1280；不再尝试 2560（超出 SDK 上限必失败，且每格白等 8s 超时——这是导出又慢又取不到图的主因）
-      for (const q of [state.ImageQuality.MAX, state.ImageQuality.HIGH]) {
+      // 缩略图质量：飞书 MAX=1280；先试最高质量，成功即停（不逐级降级浪费时间）
+      for (const q of [state.ImageQuality.MAX]) {
         try {
           const r = await withTimeout(
             state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
-            8000, 'getCellThumbnailUrls'
+            5000, 'getCellThumbnailUrls'
           );
           if (r && r.length) { thumbs = r; break; }
           else { log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn'); }
@@ -625,7 +625,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
 
   // 整体超时兜底：单个单元格取图最多 20s，超时则放弃该单元格图片（返回空），
   // 避免一个单元格的飞书接口挂起把整批导出拖死、进度条永远卡住
-  return withTimeout(inner(), 20000, 'fetchCellImages').catch((e) => {
+  return withTimeout(inner(), 12000, 'fetchCellImages').catch((e) => {
     log('  单格取图超时已跳过（' + tokens.length + ' 张）', 'warn');
     return empty();
   });
@@ -751,20 +751,21 @@ async function exportExcel() {
         const imgs = attachCache[c.fieldId] || [];
         const img = imgs[c.imgIndex];
         if (img && img.base64 && img.width && img.height) {
-          // 显示宽固定 DISPLAY_W，高严格按原图比例计算 → 等比例，绝不拉伸变形
-          const Wd = DISPLAY_W;
-          const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
+          const mode = state.imgMode || 'float';
           let imgId = null;
           try {
             imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            // oneCellAnchor：tl 锚定单元格（ExcelJS 用 tl 非 from），ext 为像素，editAs='oneCell' 标识单锚
-            ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
+            // twoCellAnchor：图片自动适应 tl→br 单元格区域（与原版一致，所有行显示均正确）
+            ws.addImage(imgId, {
+              tl: { col: ci, row: idx + 1 },
+              br: { col: ci + 1, row: idx + 2 },
+              editAs: 'twoCell',
+            });
           } catch (e) {
-            // 单张图 base64 坏 / ExcelJS 解码失败：跳过该图，不中断整批导出
             log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
             imgId = null;
           }
-          if (state.imgMode === 'image' && imgId) {
+          if (mode === 'image' && imgId) {
             // 叠加 IMAGE 公式（Excel 365/新版 WPS 可复制带走），失败不影响已贴入的浮动图
             try {
               const src = 'data:' + img.extension + ';base64,' + img.base64;
@@ -775,7 +776,10 @@ async function exportExcel() {
               }
             } catch (e) { /* 公式失败无影响 */ }
           }
-          if (imgId && Hd > maxRowPx) maxRowPx = Hd;
+          // 行高按图片等比缩放后的高度来设置，让 twoCellAnchor 区域恰好容纳图片
+          const ratio = img.height / Math.max(1, img.width);
+          const showH = Math.round(DISPLAY_W * ratio);
+          if (imgId && showH > maxRowPx) maxRowPx = showH;
         }
       } else {
         const f = state.fields.find((x) => x.id === c.fieldId);
