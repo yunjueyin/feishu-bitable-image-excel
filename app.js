@@ -297,7 +297,7 @@ async function loadData() {
   let viewId;
   if (!$('#ignoreView').checked) {
     try {
-      const view = await state.bitable.base.getActiveView();
+      const view = await state.table.getActiveView();
       viewId = view && view.id;
       if (viewId) {
         let vname = viewId;
@@ -762,7 +762,7 @@ async function exportExcel() {
           let imgId = null;
           try {
             imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            ws.addImage(imgId, { type: 'absoluteAnchor', x: colX[ci], y: yPx * EMU, width: Wd * EMU, height: Hd * EMU });
+            ws.addImage(imgId, { type: 'oneCellAnchor', from: { col: ci, colOff: 0, row: idx + 1, rowOff: 0 }, ext: { width: Wd * EMU, height: Hd * EMU } });
           } catch (e) {
             // 单张图 base64 坏 / ExcelJS 解码失败：跳过该图，不中断整批导出
             log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
