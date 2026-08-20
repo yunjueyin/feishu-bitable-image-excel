@@ -730,10 +730,10 @@ async function exportExcel() {
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).alignment = { vertical: 'middle' };
 
-  // 列宽：图片列固定 ≈ DISPLAY_W 像素；文字列约 154 像素（仅影响文字显示，图片用绝对锚定不受其限）
+  // 列宽：图片列确保 ≥ DISPLAY_W 像素（字符宽 ≈ 像素/7，+1 字符余量防裁剪）；文字列约 154 像素
   plan.forEach((c, i) => {
     const col = ws.getColumn(i + 1);
-    col.width = c.isAttachment ? Math.max(12, DISPLAY_W / 7) : 22;
+    col.width = c.isAttachment ? Math.max(12, Math.ceil(DISPLAY_W / 7) + 1) : 22;
   });
 
   // 表头行高度固定
@@ -743,7 +743,7 @@ async function exportExcel() {
     const rec = state.records[idx];
     const rowNum = idx + 2;
     const row = ws.getRow(rowNum);
-    let maxRowPx = 18;
+    let maxRowPx = 0;
     const attachCache = imgData[idx] || {};
     for (let ci = 0; ci < plan.length; ci++) {
       const c = plan[ci];
@@ -752,14 +752,17 @@ async function exportExcel() {
         const img = imgs[c.imgIndex];
         if (img && img.base64 && img.width && img.height) {
           const mode = state.imgMode || 'float';
+          // 精确像素尺寸：宽 = DISPLAY_W，高等比缩放 → 绝不变形
+          const Wd = DISPLAY_W;
+          const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
           let imgId = null;
           try {
             imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            // twoCellAnchor：图片自动适应 tl→br 单元格区域（与原版一致，所有行显示均正确）
+            // oneCellAnchor：tl 锚定单元格左上角，ext 为精确像素尺寸，editAs='oneCell' → 图片不随单元格拉伸变形
             ws.addImage(imgId, {
               tl: { col: ci, row: idx + 1 },
-              br: { col: ci + 1, row: idx + 2 },
-              editAs: 'twoCell',
+              ext: { width: Wd, height: Hd },
+              editAs: 'oneCell',
             });
           } catch (e) {
             log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
@@ -776,10 +779,8 @@ async function exportExcel() {
               }
             } catch (e) { /* 公式失败无影响 */ }
           }
-          // 行高按图片等比缩放后的高度来设置，让 twoCellAnchor 区域恰好容纳图片
-          const ratio = img.height / Math.max(1, img.width);
-          const showH = Math.round(DISPLAY_W * ratio);
-          if (imgId && showH > maxRowPx) maxRowPx = showH;
+          // 行高按图片等比缩放后的像素高度来设置
+          if (Hd > maxRowPx) maxRowPx = Hd;
         }
       } else {
         const f = state.fields.find((x) => x.id === c.fieldId);
@@ -787,8 +788,8 @@ async function exportExcel() {
         if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
       }
     }
-    // 行高（pt）容纳图片与文字
-    row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 2);
+    // 行高（pt）≈ 像素高 × 0.75（96dpi），+ 4pt 余量确保图片不被裁剪
+    row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 4);
     const done = idx + 1;
     setProgress(70 + Math.round(done / total * 30));
     setProgressCount(done + ' / ' + total + ' 行写入');
