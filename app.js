@@ -456,6 +456,7 @@ async function finalizeExcelImage(dataUrl, forceExt) {
     b64 = m2[2]; ext = 'png';
   }
   const dims = await imageSize(dataUrl);
+  if (!dims) return null; // 图坏/无法解码：返回 null，上层跳过，避免 ExcelJS addImage 读 undefined.width 崩溃
   return { base64: b64, extension: ext, width: dims.w, height: dims.h };
 }
 
@@ -466,7 +467,7 @@ function imageDims(dataUrl) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve({ w: img.naturalWidth || 150, h: img.naturalHeight || 120 });
-    img.onerror = () => resolve({ w: 150, h: 120 });
+    img.onerror = () => resolve(null); // 图坏：返回 null，让上层跳过该图，避免 ExcelJS 解码失败中断导出
     img.src = dataUrl;
   });
 }
@@ -754,14 +755,21 @@ async function exportExcel() {
       if (c.isAttachment) {
         const imgs = attachCache[c.fieldId] || [];
         const img = imgs[c.imgIndex];
-        if (img) {
+        if (img && img.base64 && img.width && img.height) {
           // 显示宽固定 DISPLAY_W，高严格按原图比例计算 → 等比例，绝不拉伸变形
           const Wd = DISPLAY_W;
           const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
-          const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-          if (state.imgMode === 'image') {
-            // 浮动打底（绝对锚定·精确等比）+ 叠加 IMAGE 公式（Excel 365/新版 WPS 可复制带走）
+          let imgId = null;
+          try {
+            imgId = wb.addImage({ base64: img.base64, extension: img.extension });
             ws.addImage(imgId, { type: 'absoluteAnchor', x: colX[ci], y: yPx * EMU, width: Wd * EMU, height: Hd * EMU });
+          } catch (e) {
+            // 单张图 base64 坏 / ExcelJS 解码失败：跳过该图，不中断整批导出
+            log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
+            imgId = null;
+          }
+          if (state.imgMode === 'image' && imgId) {
+            // 叠加 IMAGE 公式（Excel 365/新版 WPS 可复制带走），失败不影响已贴入的浮动图
             try {
               const src = 'data:' + img.extension + ';base64,' + img.base64;
               const r = await resizeImage(src, DISPLAY_W, 0.85);
@@ -769,12 +777,9 @@ async function exportExcel() {
                 row.getCell(ci + 1).value = { formula: 'IMAGE("' + r + '",1)' };
                 state.stat.embedded++;
               }
-            } catch (e) { /* 浮动图已保证可见，公式失败无影响 */ }
-          } else {
-            // 浮动图片（绝对锚定·精确等比）：所有 Excel/WPS 都能看到图，且复制单元格不会带走图片
-            ws.addImage(imgId, { type: 'absoluteAnchor', x: colX[ci], y: yPx * EMU, width: Wd * EMU, height: Hd * EMU });
+            } catch (e) { /* 公式失败无影响 */ }
           }
-          if (Hd > maxRowPx) maxRowPx = Hd;
+          if (imgId && Hd > maxRowPx) maxRowPx = Hd;
         }
       } else {
         const f = state.fields.find((x) => x.id === c.fieldId);
