@@ -597,7 +597,10 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
             8000, 'getCellThumbnailUrls'
           );
           if (r && r.length) { thumbs = r; break; }
-        } catch (e) { /* 试下一档质量 */ }
+          else { log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn'); }
+        } catch (e) {
+          log('  缩略图质量 ' + q + ' 失败：' + (e && e.message ? e.message : e), 'warn');
+        }
       }
       // 诊断：首次打印缩略图返回格式，便于确认 SDK 返回的是 base64 还是 URL
       if (thumbs && thumbs[0] != null && !state._thumbLogged) {
@@ -733,16 +736,8 @@ async function exportExcel() {
     col.width = c.isAttachment ? Math.max(12, DISPLAY_W / 7) : 22;
   });
 
-  // 表头行高度固定，作为数据行图片绝对定位 y 的起点基准
-  const HEAD_PX = 19;
-  ws.getRow(1).height = Math.round(HEAD_PX * 0.75);
-  // 绝对锚定：每张图按 EMU 精确控制显示尺寸，严格等比例，不受行高拉伸变形
-  const EMU = 9525;
-  const colPx = plan.map((c) => (c.isAttachment ? DISPLAY_W : 154));
-  const colX = [];
-  let accX = 0;
-  for (let i = 0; i < colPx.length; i++) { colX.push(accX * EMU); accX += colPx[i]; }
-  let yPx = HEAD_PX;
+  // 表头行高度固定
+  ws.getRow(1).height = 15;
 
   for (let idx = 0; idx < total; idx++) {
     const rec = state.records[idx];
@@ -762,7 +757,8 @@ async function exportExcel() {
           let imgId = null;
           try {
             imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            ws.addImage(imgId, { type: 'oneCellAnchor', from: { col: ci, colOff: 0, row: idx + 1, rowOff: 0 }, ext: { width: Wd * EMU, height: Hd * EMU } });
+            // oneCellAnchor：from 锚定单元格，ext 为像素（ExcelJS 内部自动 ×9525 转 EMU）
+            ws.addImage(imgId, { type: 'oneCellAnchor', from: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd } });
           } catch (e) {
             // 单张图 base64 坏 / ExcelJS 解码失败：跳过该图，不中断整批导出
             log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
@@ -787,9 +783,8 @@ async function exportExcel() {
         if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
       }
     }
-    // 行高（pt）容纳文字；图片用绝对 y 定位，不受行高拉伸
+    // 行高（pt）容纳图片与文字
     row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 2);
-    yPx += maxRowPx;
     const done = idx + 1;
     setProgress(70 + Math.round(done / total * 30));
     setProgressCount(done + ' / ' + total + ' 行写入');
