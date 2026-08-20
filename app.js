@@ -757,8 +757,8 @@ async function exportExcel() {
           let imgId = null;
           try {
             imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            // oneCellAnchor：from 锚定单元格，ext 为像素（ExcelJS 内部自动 ×9525 转 EMU）
-            ws.addImage(imgId, { type: 'oneCellAnchor', from: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd } });
+            // oneCellAnchor：tl 锚定单元格（ExcelJS 用 tl 非 from），ext 为像素，editAs='oneCell' 标识单锚
+            ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
           } catch (e) {
             // 单张图 base64 坏 / ExcelJS 解码失败：跳过该图，不中断整批导出
             log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
