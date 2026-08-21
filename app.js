@@ -77,6 +77,22 @@ async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDe
   throw lastErr;
 }
 
+// 全局并发信号量：飞书 getCellThumbnailUrls / getCellAttachmentUrls 是服务端生成/鉴权操作，
+// 对并发极敏感；用信号量把「实际在途的 SDK 调用数」硬限到很小的值，避免压垮服务导致整批超时。
+function makeLimiter(max) {
+  let active = 0;
+  const queue = [];
+  const next = () => { if (queue.length && active < max) { active++; const run = queue.shift(); run(); } };
+  return (fn) => new Promise((resolve, reject) => {
+    const run = () => {
+      Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); });
+    };
+    if (active < max) { active++; run(); } else { queue.push(run); }
+  });
+}
+const thumbLimit = makeLimiter(3);   // 同时在途的缩略图请求 ≤ 3
+const attachLimit = makeLimiter(3);  // 同时在途的原图请求 ≤ 3
+
 function loadScript(src) {
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
@@ -421,6 +437,22 @@ async function blobToExcelImage(blob) {
   return r;
 }
 
+// 原图兜底：Blob → 本地缩放至 targetW 像素 → 转 JPEG（减小体积）→ Excel 图片（计 orig）。
+// 用于缩略图服务超时时尽量保住图片；飞书 CDN 偶尔 CORS 拦截导致下载失败，由上层 try/catch 兜底。
+async function blobToExcelImageResized(blob, targetW) {
+  const mime = blob.type || 'image/png';
+  let dataUrl;
+  if (SUPPORTED_IMG.includes(mimeToExt(mime))) {
+    dataUrl = await blobToDataUrl(blob);
+  } else {
+    const bmp = await createImageBitmap(blob);
+    dataUrl = canvasToDataUrl(bmp, 'image/png');
+  }
+  const resized = await resizeImage(dataUrl, targetW, 0.85);
+  state.stat.orig++;
+  return finalizeExcelImage(resized, null);
+}
+
 // 缩略图返回可能是：base64 字符串 / data URL / http(s) URL / 对象({url|thumbnail|data|base64})
 function detectMime(b64) {
   if (/^iVBORw0KGgo/.test(b64)) return 'image/png';
@@ -578,72 +610,70 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   if (!tokens.length) return [];
   const empty = () => new Array(tokens.length).fill(null);
 
-  const inner = async () => {
+  const run = async () => {
     const out = empty();
 
-    if (state.imgQuality === 'orig') {
-      // 高清原图：本地直连飞书附件 URL（无代理）
-      let urls = [];
-      try {
-        urls = await withRetry(
-          () => state.table.getCellAttachmentUrls(tokens, fieldId, recordId),
-          { retries: 2, timeoutMs: 8000, label: 'getCellAttachmentUrls' }
-        );
-      } catch (e) { /* 转缩略图兜底 */ }
-      if (urls && urls.length) {
-        const results = await Promise.all(urls.map(async (u) => {
-          try {
-            const resp = await fetchWithTimeout(u, 4000);
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            return await blobToExcelImage(await resp.blob());
-          } catch (e) { return null; } // 取不到原图，留给缩略图兜底（不刷屏）
-        }));
-        results.forEach((r, i) => { if (r) out[i] = r; });
-      }
-    }
-
-    // 缩略图兜底（或缩略图模式直接走这里）：SDK 直接返回 base64，最快最稳
-    const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
-    if (failedIdx.length) {
+    // ① 缩略图（SDK 直接返回 base64，无 CORS，最快）：受信号量限流 + 12s 超时 + 轻度重试。
+    //    优先用较快的 HIGH(720)，失败再试 MAX(1280)；720 在飞书侧生成更快，能显著减少超时。
+    if (state.imgQuality !== 'orig') {
+      const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
       const failedTokens = failedIdx.map((i) => tokens[i]);
       let thumbs = null;
-      // 缩略图质量：先试 MAX(1280)，超时或返回空则降级 HIGH(720)——MAX 在飞书侧通常需 5-8s
-      for (const q of [state.ImageQuality.MAX, state.ImageQuality.HIGH]) {
+      for (const q of [state.ImageQuality.HIGH, state.ImageQuality.MAX]) {
         try {
-          const r = await withRetry(
-            () => state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
-            { retries: 3, timeoutMs: 8000, label: 'getCellThumbnailUrls(q' + q + ')', baseDelay: 400 }
-          );
+          const r = await thumbLimit(() => withRetry(
+            async () => { await sleep(150); return state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q); },
+            { retries: 2, timeoutMs: 12000, label: 'getCellThumbnailUrls(q' + q + ')', baseDelay: 600 }
+          ));
           if (r && r.length) { thumbs = r; break; }
-          else { log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn'); }
+          else log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn');
         } catch (e) {
           log('  缩略图质量 ' + q + ' 失败：' + (e && e.message ? e.message : e), 'warn');
         }
       }
-      // 诊断：首次打印缩略图返回格式，便于确认 SDK 返回的是 base64 还是 URL
-      if (thumbs && thumbs[0] != null && !state._thumbLogged) {
-        state._thumbLogged = true;
-        const sm = thumbs[0];
-        const t = typeof sm === 'string' ? sm : (sm && (sm.url || sm.thumbnail || JSON.stringify(sm))) || String(sm);
-        log('缩略图返回格式样例（' + (typeof sm) + '）：' + String(t).slice(0, 60));
-      }
       if (thumbs) {
         await Promise.all(failedIdx.map(async (idx, k) => {
-          if (thumbs[k] != null) {
-            try { out[idx] = await thumbToExcelImage(thumbs[k]); }
-            catch (e) { /* 忽略单张 */ }
-          }
+          if (thumbs[k] != null) { try { out[idx] = await thumbToExcelImage(thumbs[k]); } catch (e) {} }
         }));
-      } else {
-        log('  该单元格原图与缩略图均不可取', 'err');
+        if (!state._thumbLogged) {
+          state._thumbLogged = true;
+          const sm = thumbs[0];
+          const t = typeof sm === 'string' ? sm : (sm && (sm.url || sm.thumbnail || JSON.stringify(sm))) || String(sm);
+          log('缩略图返回格式样例（' + (typeof sm) + '）：' + String(t).slice(0, 60));
+        }
       }
     }
+
+    // ② 原图兜底（orig 模式主力；或缩略图失败时的兜底）：直连飞书附件 URL 本地下载 + canvas 缩放转 JPEG。
+    //    飞书 CDN 偶尔 CORS 拦截导致下载失败，属正常，失败即跳过、不刷屏。
+    const stillMissing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+    if (stillMissing.length) {
+      let urls = [];
+      try {
+        urls = await attachLimit(() => withRetry(
+          () => state.table.getCellAttachmentUrls(stillMissing.map((i) => tokens[i]), fieldId, recordId),
+          { retries: 1, timeoutMs: 10000, label: 'getCellAttachmentUrls', baseDelay: 500 }
+        ));
+      } catch (e) { /* 兜底失败，进入下方空图判断 */ }
+      if (urls && urls.length) {
+        await Promise.all(stillMissing.map(async (idx, k) => {
+          const u = urls[k];
+          if (!u) return;
+          try {
+            const resp = await fetchWithTimeout(u, 6000);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            out[idx] = await blobToExcelImageResized(await resp.blob(), 1200);
+          } catch (e) { /* 取不到原图：留空 */ }
+        }));
+      }
+    }
+
+    if (!out.some(Boolean)) log('  该单元格原图与缩略图均不可取', 'err');
     return out;
   };
 
-  // 整体超时兜底：单格取图最多 45s（给重试链留足空间），超时则放弃该格图片返回空，
-  // 避免一个单元格的飞书接口挂起把整批导出拖死、进度条永远卡住
-  return withTimeout(inner(), 45000, 'fetchCellImages').catch((e) => {
+  // 整体超时兜底：单格取图最多 45s，超时则放弃该格图片返回空，避免一个单元格的飞书接口挂起把整批导出拖死。
+  return withTimeout(run(), 45000, 'fetchCellImages').catch((e) => {
     log('  单格取图超时已跳过（' + tokens.length + ' 张）', 'warn');
     return empty();
   });
@@ -692,8 +722,8 @@ async function exportExcel() {
   if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
   const plan = buildColumnPlan(fieldIds);
   const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-  // 飞书 getCellThumbnailUrls 等服务端生成操作对并发极敏感（高并发必超时），默认保守并发 2，
-  // 配合 withRetry 重试，实测比默认 10 并发反而更快且几乎不掉图
+  // 行级并发：每个 worker 负责若干行；但「真正在途的飞书 SDK 取图调用」已由全局信号量 thumbLimit/attachLimit 硬限到 ≤3，
+  // 行并发仅影响取图与写表之间的流水线，不会压垮飞书缩略图服务
   const concurrency = Math.max(1, Math.min(10, parseInt($('#concurrency').value, 10) || 2));
   state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
   state.imgQuality = ($('#imgQuality').value || 'thumb'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
@@ -961,8 +991,8 @@ async function exportZip() {
 
   const namingId = $('#namingField').value;
   state.stat = { orig: 0, thumb: 0 };
-  // 飞书 getCellThumbnailUrls 等服务端生成操作对并发极敏感（高并发必超时），默认保守并发 2，
-  // 配合 withRetry 重试，实测比默认 10 并发反而更快且几乎不掉图
+  // 行级并发：每个 worker 负责若干行；但「真正在途的飞书 SDK 取图调用」已由全局信号量 thumbLimit/attachLimit 硬限到 ≤3，
+  // 行并发仅影响取图与写表之间的流水线，不会压垮飞书缩略图服务
   const concurrency = Math.max(1, Math.min(10, parseInt($('#concurrency').value, 10) || 2));
 
   $('#btnExport').disabled = true;
