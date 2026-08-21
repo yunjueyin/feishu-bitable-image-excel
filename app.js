@@ -58,6 +58,24 @@ function withTimeout(promise, ms, label) {
   });
   return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
 }
+// 带超时 + 重试的 SDK 调用：飞书 getCellThumbnailUrls 等服务端生成操作在高并发下会超时，
+// 但串行/低并发重试通常能成功。retries 次重试，退避递增（base, base*2, base*3...）。
+async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDelay = 300 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await withTimeout(fn(), timeoutMs, label + (attempt > 0 ? ' #' + attempt : ''));
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        const d = baseDelay * (attempt + 1);
+        log('  ' + label + ' 第' + (attempt + 1) + '次失败（' + (e.message || e) + '），' + d + 'ms 后重试', 'warn');
+        await sleep(d);
+      }
+    }
+  }
+  throw lastErr;
+}
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -567,9 +585,9 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       // 高清原图：本地直连飞书附件 URL（无代理）
       let urls = [];
       try {
-        urls = await withTimeout(
-          state.table.getCellAttachmentUrls(tokens, fieldId, recordId),
-          8000, 'getCellAttachmentUrls'
+        urls = await withRetry(
+          () => state.table.getCellAttachmentUrls(tokens, fieldId, recordId),
+          { retries: 2, timeoutMs: 8000, label: 'getCellAttachmentUrls' }
         );
       } catch (e) { /* 转缩略图兜底 */ }
       if (urls && urls.length) {
@@ -592,9 +610,9 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       // 缩略图质量：先试 MAX(1280)，超时或返回空则降级 HIGH(720)——MAX 在飞书侧通常需 5-8s
       for (const q of [state.ImageQuality.MAX, state.ImageQuality.HIGH]) {
         try {
-          const r = await withTimeout(
-            state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
-            8000, 'getCellThumbnailUrls'
+          const r = await withRetry(
+            () => state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
+            { retries: 3, timeoutMs: 8000, label: 'getCellThumbnailUrls(q' + q + ')', baseDelay: 400 }
           );
           if (r && r.length) { thumbs = r; break; }
           else { log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn'); }
@@ -623,9 +641,9 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     return out;
   };
 
-  // 整体超时兜底：单个单元格取图最多 20s，超时则放弃该单元格图片（返回空），
+  // 整体超时兜底：单格取图最多 45s（给重试链留足空间），超时则放弃该格图片返回空，
   // 避免一个单元格的飞书接口挂起把整批导出拖死、进度条永远卡住
-  return withTimeout(inner(), 12000, 'fetchCellImages').catch((e) => {
+  return withTimeout(inner(), 45000, 'fetchCellImages').catch((e) => {
     log('  单格取图超时已跳过（' + tokens.length + ' 张）', 'warn');
     return empty();
   });
@@ -674,7 +692,9 @@ async function exportExcel() {
   if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
   const plan = buildColumnPlan(fieldIds);
   const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-  const concurrency = Math.max(1, Math.min(30, parseInt($('#concurrency').value, 10) || 10));
+  // 飞书 getCellThumbnailUrls 等服务端生成操作对并发极敏感（高并发必超时），默认保守并发 2，
+  // 配合 withRetry 重试，实测比默认 10 并发反而更快且几乎不掉图
+  const concurrency = Math.max(1, Math.min(10, parseInt($('#concurrency').value, 10) || 2));
   state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
   state.imgQuality = ($('#imgQuality').value || 'thumb'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
   state.stat = { orig: 0, thumb: 0, embedded: 0 };
@@ -941,7 +961,9 @@ async function exportZip() {
 
   const namingId = $('#namingField').value;
   state.stat = { orig: 0, thumb: 0 };
-  const concurrency = Math.max(1, Math.min(30, parseInt($('#concurrency').value, 10) || 10));
+  // 飞书 getCellThumbnailUrls 等服务端生成操作对并发极敏感（高并发必超时），默认保守并发 2，
+  // 配合 withRetry 重试，实测比默认 10 并发反而更快且几乎不掉图
+  const concurrency = Math.max(1, Math.min(10, parseInt($('#concurrency').value, 10) || 2));
 
   $('#btnExport').disabled = true;
   $('#btnExportZip').disabled = true;
