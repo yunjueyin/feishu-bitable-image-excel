@@ -76,6 +76,14 @@
   --shadow-pop: 0 24px 70px rgba(0, 0, 0, 0.55), 0 8px 22px rgba(0, 0, 0, 0.4);
 }
 
+/* 暗色下图标块投影收敛、品牌 logo 投影 */
+[data-theme="dark"] .ico-tile {
+  box-shadow: 0 3px 9px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+[data-theme="dark"] .brand-logo {
+  box-shadow: 0 3px 10px rgba(51, 112, 255, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
 /* 系统暗色兜底（用户未显式选择时） */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
@@ -138,31 +146,37 @@ body {
 }
 .ico.fill { fill: currentColor; stroke: none; }
 
-/* ---------- 柔色圆角图标块（tint tile） ---------- */
+/* ---------- 柔色圆角图标块（多彩渐变 + 白图标 + 微投影） ---------- */
 .ico-tile {
   width: 30px; height: 30px; flex: none;
   display: grid; place-items: center;
   border-radius: 9px;
-  background: var(--tint-blue-bg);
-  color: var(--tint-blue-fg);
+  background: linear-gradient(135deg, #4f7cff, #3370ff);
+  color: #fff;
+  box-shadow: 0 2px 7px rgba(51, 112, 255, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
-.ico-tile .ico { width: 16px; height: 16px; }
-.ico-tile.t-violet { background: var(--tint-violet-bg); color: var(--tint-violet-fg); }
-.ico-tile.t-cyan   { background: var(--tint-cyan-bg);   color: var(--tint-cyan-fg); }
-.ico-tile.t-green  { background: var(--tint-green-bg);  color: var(--tint-green-fg); }
-.ico-tile.t-amber  { background: var(--tint-amber-bg);  color: var(--tint-amber-fg); }
-.ico-tile.t-red    { background: var(--tint-red-bg);    color: var(--tint-red-fg); }
+.ico-tile .ico { width: 16px; height: 16px; stroke-width: 1.9; }
+.ico-tile.t-violet { background: linear-gradient(135deg, #b06bff, #7c3aed); box-shadow: 0 2px 7px rgba(124, 58, 237, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+.ico-tile.t-cyan   { background: linear-gradient(135deg, #2bd4e6, #0ea5b7); box-shadow: 0 2px 7px rgba(14, 165, 183, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+.ico-tile.t-green  { background: linear-gradient(135deg, #43e0a0, #10b981); box-shadow: 0 2px 7px rgba(16, 185, 129, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+.ico-tile.t-amber  { background: linear-gradient(135deg, #ffc24d, #f59e0b); box-shadow: 0 2px 7px rgba(245, 158, 11, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+.ico-tile.t-indigo { background: linear-gradient(135deg, #7c83ff, #4f46e5); box-shadow: 0 2px 7px rgba(79, 70, 229, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+.ico-tile.t-red    { background: linear-gradient(135deg, #ff7d92, #f43f5e); box-shadow: 0 2px 7px rgba(244, 63, 94, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
 
 /* ---------- 按钮内图标块 ---------- */
 .btn-ico {
   width: 24px; height: 24px; flex: none;
   display: grid; place-items: center;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.16);
   color: #fff;
 }
-.btn-ico .ico { width: 14px; height: 14px; }
-.btn-soft .btn-ico { background: rgba(20, 24, 40, 0.06); color: var(--text-soft); }
+.btn-ico .ico { width: 14px; height: 14px; stroke-width: 1.9; }
+.btn-primary .btn-ico {
+  background: linear-gradient(135deg, #5b8cff, #3370ff);
+  box-shadow: 0 2px 6px rgba(51, 112, 255, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+.btn-soft .btn-ico { background: rgba(20, 24, 40, 0.07); color: var(--text-soft); box-shadow: none; }
 
 /* ---------- 头部 ---------- */
 .app-header {
@@ -180,7 +194,7 @@ body {
   background: linear-gradient(150deg, #eaf1ff, #dde7ff);
   border-radius: 13px;
   flex: none;
-  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08);
+  box-shadow: 0 4px 12px rgba(51, 112, 255, 0.22), inset 0 0 0 1px rgba(51, 112, 255, 0.08);
 }
 [data-theme="dark"] .brand-logo { background: linear-gradient(150deg, rgba(77,131,255,.22), rgba(77,131,255,.08)); }
 .brand-logo svg { width: 24px; height: 24px; display: block; }
