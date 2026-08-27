@@ -452,6 +452,65 @@ body {
 }
 .muted.center { text-align: center; margin: 4px 0 0; line-height: 1.5; }
 
+/* 设置文字按钮（UI5：原 ⚙ 无标签，改为可见「设置」） */
+.text-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 14px;
+  border: 1px solid var(--border-strong); background: #fff;
+  border-radius: 11px; font-size: 13px; font-weight: 600; color: var(--text-soft);
+  cursor: pointer; font-family: inherit;
+  transition: background .18s var(--ease), color .18s var(--ease), border-color .18s var(--ease), transform .1s var(--ease);
+}
+.text-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: transparent; }
+.text-btn:active { transform: scale(.96); }
+
+/* 取消按钮（功能5） */
+.mini-cancel {
+  margin-left: auto;
+  background: transparent; border: 1px solid var(--border-strong);
+  color: var(--err); font-size: 12px; font-weight: 600;
+  padding: 4px 12px; border-radius: 999px; cursor: pointer; font-family: inherit;
+  transition: background .15s var(--ease);
+}
+.mini-cancel:hover { background: #fdecec; }
+.mini-cancel.hidden { display: none; }
+
+/* 导出前预览缩略图（UI1） */
+.preview-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.pv-thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 9px; border: 1px solid var(--border); background: #f2f3f5; }
+.preview-thumbs:empty { display: none; }
+
+/* 标记副作用说明（交互1） */
+.warn-note { color: var(--warn); margin-top: 6px; }
+
+/* 确认弹窗（交互1 / 交互4） */
+.modal-sm { max-width: 420px; }
+.modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 20px 20px; }
+.modal-foot .btn { flex: 0 0 auto; min-width: 96px; }
+
+/* 成功 toast（UI2 / 交互5） */
+.toast {
+  position: fixed; left: 50%; bottom: 28px;
+  transform: translateX(-50%) translateY(16px);
+  display: flex; align-items: flex-start; gap: 10px;
+  max-width: 92vw; width: 380px;
+  background: #1f2329; color: #fff;
+  padding: 13px 16px; border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(16, 24, 40, 0.28);
+  opacity: 0; pointer-events: none;
+  transition: opacity .26s var(--ease), transform .26s var(--ease);
+  z-index: 80;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.toast.hidden { display: none; }
+.toast-icon { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--ok); color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+.toast-body { min-width: 0; }
+.toast-title { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+.toast-msg { font-size: 12px; opacity: .85; word-break: break-all; line-height: 1.5; }
+
+/* 操作按钮在移动端仍占满一行（UI3 去掉步骤序号后保持易点） */
+.actions .btn { width: 100%; }
+
 /* ---------- 滚动条美化（webkit） ---------- */
 .field-list::-webkit-scrollbar,
 .log::-webkit-scrollbar { width: 8px; }
@@ -467,6 +526,9 @@ body {
 @media (min-width: 560px) {
   .modal { border-radius: 20px; margin: auto; max-height: 88vh; }
   .modal-mask { align-items: center; }
+  /* 桌面端三个操作按钮横向排布（UI6），更紧凑 */
+  .actions { flex-direction: row; flex-wrap: wrap; }
+  .actions .btn { width: auto; flex: 1 1 0; min-width: 120px; }
 }
 @media (max-width: 559px) {
   .app { padding: 20px 14px 44px; }

@@ -9,6 +9,18 @@ const SUPPORTED_IMG = ['png', 'jpeg', 'gif', 'bmp'];
 const ImageQualityFallback = { Low: 120, Mid: 360, HIGH: 720, MAX: 1280 };
 const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质量，飞书服务端若支持则返回更大图
 
+// 飞书 SDK 1.0.2 实际并未导出 ImageQuality 枚举（已核对 dist 包），运行时 state.ImageQuality 恒为兜底常量。
+// 为兼容「未来 SDK 真导出该枚举且键名大小写不同（High/MAX 等）」的情况，这里做大小写容错解析：
+// 优先取 SDK 枚举（多种大小写都试），取不到则回退到已知可用的数字 720/1280。
+function resolveQuality() {
+  const Q = (state && state.ImageQuality) || ImageQualityFallback;
+  const pick = (...keys) => { for (const k of keys) if (Q[k] != null) return Q[k]; return undefined; };
+  return {
+    HIGH: pick('HIGH', 'High', 'high') != null ? pick('HIGH', 'High', 'high') : ImageQualityFallback.HIGH,
+    MAX: pick('MAX', 'Max', 'max') != null ? pick('MAX', 'Max', 'max') : ImageQualityFallback.MAX,
+  };
+}
+
 // ---------- 状态 ----------
 const state = {
   bitable: null,
@@ -22,6 +34,9 @@ const state = {
   maxAttach: {},     // fieldId -> 该字段单格最多附件数
   loaded: false,
   stat: { orig: 0, thumb: 0 }, // 本次导出图片来源统计
+  fetchStat: { ok: 0, fail: 0, fallback: 0 }, // 取图实时计数（交互3）
+  aborted: false, // 取消标志（功能5）
+  onlyUnmarked: false, // 仅导出未标记行（功能4）
   imgQuality: 'thumb', // thumb=缩略图(最快·推荐) / orig=高清原图(本地直连飞书)
 };
 
@@ -101,6 +116,234 @@ function loadScript(src) {
   });
 }
 
+// ---------- 本地存储（功能8：记住选择与设置）----------
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+const selKey = (tid) => 'fie_sel_' + tid;
+// 记住/恢复每表勾选字段
+function saveSelection() {
+  if (!state.tableId) return;
+  LS.set(selKey(state.tableId), getSelectedFieldIds());
+}
+function applySelection() {
+  const saved = LS.get(selKey(state.tableId), null);
+  const boxes = document.querySelectorAll('#fieldList input[type=checkbox]');
+  if (saved && Array.isArray(saved) && saved.length) {
+    const set = new Set(saved);
+    boxes.forEach((cb) => { cb.checked = set.has(cb.dataset.fieldId); });
+  }
+  updateFieldSummary();
+}
+// 记住/恢复常用导出设置（全局）
+function saveSettings() {
+  LS.set('fie_settings', {
+    imgQuality: $('#imgQuality').value,
+    imgMode: $('#imgMode').value,
+    imgWidth: $('#imgWidth').value,
+    concurrency: $('#concurrency').value,
+    onlyUnmarked: $('#onlyUnmarked').checked,
+    namingField: $('#namingField').value,
+    markField: $('#markField').value,
+  });
+}
+function applySettings() {
+  const s = LS.get('fie_settings', {});
+  if (s.imgQuality) $('#imgQuality').value = s.imgQuality;
+  if (s.imgMode) $('#imgMode').value = s.imgMode;
+  if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
+  if (s.concurrency) $('#concurrency').value = s.concurrency;
+  if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
+  if (s.namingField) $('#namingField').value = s.namingField;
+  if (s.markField) $('#markField').value = s.markField;
+  state.onlyUnmarked = !!s.onlyUnmarked;
+}
+
+// ---------- 有效记录集（功能4：仅导出未标记行）----------
+function getEffectiveRecords() {
+  const markSel = $('#markField') ? $('#markField').value : '';
+  const onlyUnmarked = $('#onlyUnmarked') ? $('#onlyUnmarked').checked : false;
+  let recs = state.records;
+  if (onlyUnmarked && markSel && markSel !== '__create__') {
+    recs = recs.filter((r) => {
+      const v = r.fields ? r.fields[markSel] : undefined;
+      return v !== true; // 只保留未勾选（未标记）的行
+    });
+  }
+  return recs;
+}
+
+// 导出规模预估（交互4：大表确认）
+function estimateExport() {
+  const recs = getEffectiveRecords();
+  const fieldIds = getSelectedFieldIds();
+  const attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
+  let imgs = 0;
+  for (const r of recs) {
+    for (const f of attachFields) {
+      const c = r.fields && r.fields[f.id];
+      if (Array.isArray(c)) imgs += c.filter((x) => x && x.token).length;
+    }
+  }
+  return { rows: recs.length, imgs, tooLarge: recs.length > 500 || imgs > 800 };
+}
+
+// ---------- 分块取图（功能6：降内存峰值）----------
+// 仅对传入的 records 取图，返回与 records 对齐的 imgData；尊重取消标志。
+async function fetchImagesForRecords(records, attachFieldIds, onProgress) {
+  const out = new Array(records.length);
+  let cursor = 0;
+  let done = 0;
+  const conc = Math.max(1, Math.min(12, parseInt($('#concurrency').value, 10) || 2));
+  async function worker() {
+    while (!state.aborted && cursor < records.length) {
+      const i = cursor++;
+      const rec = records[i];
+      const cache = {};
+      await Promise.all(attachFieldIds.map((fid) =>
+        fetchCellImages(fid, rec.recordId, rec.fields ? rec.fields[fid] : undefined).then((imgs) => { cache[fid] = imgs; })
+      ));
+      out[i] = cache;
+      done++;
+      if (onProgress) onProgress(done, records.length);
+    }
+  }
+  const ws = [];
+  for (let i = 0; i < conc; i++) ws.push(worker());
+  await Promise.all(ws);
+  return out;
+}
+
+// ---------- 文件名 / 下载（复用，避免重复）----------
+function makeXlsxName() {
+  const safe = (state.tableName || 'export').replace(/[\\/:*?"<>|]/g, '_');
+  const stamp = new Date().toISOString().slice(0, 10);
+  return safe + '_图片_' + stamp + '.xlsx';
+}
+function makeZipName() {
+  const safe = (state.tableName || 'export').replace(/[\\/:*?"<>|]/g, '_');
+  const stamp = new Date().toISOString().slice(0, 10);
+  return safe + '_图片_' + stamp + '.zip';
+}
+function triggerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ---------- 取消 / 完成 UI（功能5）----------
+function showCancel() { const b = $('#btnCancel'); if (b) b.classList.remove('hidden'); }
+function hideCancel() { const b = $('#btnCancel'); if (b) b.classList.add('hidden'); }
+function finishExportUI() {
+  $('#btnExport').disabled = false;
+  $('#btnExportZip').disabled = false;
+  $('#btnLoad').disabled = false;
+  hideProgress();
+  hideCancel();
+}
+
+// ---------- 成功 toast（UI2 / 交互5）----------
+function showToast(title, msg) {
+  const t = $('#toast');
+  if (!t) return;
+  $('#toastTitle').textContent = title;
+  $('#toastMsg').textContent = msg;
+  t.classList.remove('hidden');
+  // 触发过渡
+  requestAnimationFrame(() => t.classList.add('show'));
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => {
+    t.classList.remove('show');
+    setTimeout(() => t.classList.add('hidden'), 280);
+  }, 5200);
+}
+
+// ---------- 通用确认弹窗（交互1：标记副作用确认 / 交互4：大表确认）----------
+function showConfirm(message, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const modal = $('#confirmModal');
+    if (!modal) { resolve(true); return; }
+    $('#confirmTitle').textContent = opts.title || '确认';
+    $('#confirmMsg').textContent = message;
+    const okBtn = $('#confirmOk');
+    const cancelBtn = $('#confirmCancel');
+    okBtn.textContent = opts.okText || '确定';
+    cancelBtn.textContent = opts.cancelText || '取消';
+    modal.hidden = false;
+    const cleanup = () => {
+      modal.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onMask);
+    };
+    const onOk = () => { cleanup(); resolve(true); };
+    const onCancel = () => { cleanup(); resolve(false); };
+    const onMask = (e) => { if (e.target === modal) onCancel(); };
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onMask);
+  });
+}
+
+// 标记前二次确认（交互1）。首次确认后记住，避免每次都弹。
+async function ensureMarkConsent() {
+  const sel = $('#markField') ? $('#markField').value : '';
+  if (!sel) return true; // 不标记
+  if (LS.get('fie_mark_consent', false)) return true;
+  let label = '';
+  const opt = $('#markField').selectedOptions && $('#markField').selectedOptions[0];
+  if (opt) label = opt.textContent;
+  const detail = sel === '__create__'
+    ? '新建「已导出」字段并标记已导出的行'
+    : '在字段「' + label + '」中标记已导出的行';
+  const ok = await showConfirm('导出完成后将' + detail + '。此操作会修改你的多维表（可手动撤销）。确定继续吗？', { okText: '继续并记住', cancelText: '取消' });
+  if (ok) LS.set('fie_mark_consent', true);
+  return ok;
+}
+
+// ---------- 导出前预览（UI1）----------
+async function loadPreviewThumbs() {
+  const cont = $('#previewThumbs');
+  const hint = $('#previewHint');
+  if (cont) cont.innerHTML = '';
+  if (hint) hint.textContent = '正在取图…';
+  const attachFields = state.fields.filter((f) => f.isAttachment);
+  if (!attachFields.length) { if (hint) hint.textContent = '本表没有图片字段，无可预览。'; return; }
+  const rec = state.records[0];
+  if (!rec) { if (hint) hint.textContent = '尚无数据，请先加载数据。'; return; }
+  let loaded = 0;
+  try {
+    for (const f of attachFields) {
+      const cell = rec.fields && rec.fields[f.id];
+      const tokens = (Array.isArray(cell) ? cell : []).filter((x) => x && x.token).slice(0, 3);
+      for (const tk of tokens) {
+        if (loaded >= 6) break;
+        try {
+          const r = await thumbLimit(() => withRetry(
+            async () => state.table.getCellThumbnailUrls([tk], f.id, rec.recordId, resolveQuality().MAX),
+            { retries: 1, timeoutMs: 10000, label: 'preview' }
+          ));
+          const im = await thumbToExcelImage(r && r[0]);
+          if (im && cont) {
+            const img = document.createElement('img');
+            img.src = 'data:' + im.extension + ';base64,' + im.base64;
+            img.className = 'pv-thumb';
+            img.alt = f.name;
+            cont.appendChild(img);
+            loaded++;
+          }
+        } catch (e) { /* 忽略单张失败 */ }
+      }
+      if (loaded >= 6) break;
+    }
+  } catch (e) { /* 忽略 */ }
+  if (hint) hint.textContent = loaded ? ('已预览前 ' + loaded + ' 张（仅示意，实际以导出为准）') : '预览取图失败（不影响导出）。';
+}
+
 // ---------- 加载 SDK ----------
 async function loadSdk() {
   const urls = [
@@ -171,6 +414,7 @@ async function init() {
     renderTableSelect(state.tableMetas, state.tableId);
     setStatus('已连接：' + state.tableName, 'ok');
     await loadFields();
+    applySettings(); // 恢复上次导出的常用设置（功能8）
     $('#btnLoad').disabled = false;
   } catch (e) {
     setStatus('未在飞书多维表环境中，或无法获取当前表：' + e.message, 'err');
@@ -188,6 +432,7 @@ async function loadFields() {
     isAttachment: m.type === FIELD_TYPE_ATTACHMENT,
   }));
   renderFieldList();
+  applySelection(); // 恢复本表上次勾选（功能8）
   renderMarkOptions();
   renderNamingOptions();
 }
@@ -302,7 +547,8 @@ async function switchTable(id) {
     $('#count').textContent = '';
     setStatus('已连接：' + state.tableName, 'ok');
     await loadFields();
-    log('已切换数据表：' + state.tableName + '（请重新点「加载数据」）', 'ok');
+    log('已切换数据表：' + state.tableName + '，正在自动加载数据…', 'ok');
+    await loadData(); // 交互2：切表后自动加载，免去手动再点
   } catch (e) {
     setStatus('切换数据表失败：' + e.message, 'err');
     log('切换数据表失败：' + e.message, 'err');
@@ -318,6 +564,7 @@ function getSelectedFieldIds() {
 // ---------- 读取全部记录 ----------
 async function loadData() {
   if (!state.table) return;
+  state.aborted = false; // 复位取消标志
   $('#btnLoad').disabled = true;
   $('#btnExport').disabled = true;
   state.loaded = false;
@@ -379,6 +626,12 @@ async function loadData() {
     $('#count').textContent = '共 ' + all.length + ' 行';
     $('#btnExport').disabled = false;
     $('#btnExportZip').disabled = false;
+    // 预览卡：更新预估并启用预览按钮（UI1 / 交互4）
+    const est = estimateExport();
+    const ps = $('#previewSummary');
+    if (ps) ps.textContent = '预计 ' + est.rows + ' 行 · 约 ' + est.imgs + ' 张图片' + (est.tooLarge ? '（较大，导出前会确认）' : '');
+    const pb = $('#btnLoadPreview');
+    if (pb) pb.disabled = false;
     setProgress(100);
     log('读取完成，共 ' + all.length + ' 行。', 'ok');
   } catch (e) {
@@ -467,6 +720,44 @@ function extractThumbStr(item) {
   if (typeof item === 'object') return item.url || item.thumbnail || item.data || item.base64 || item.downloadUrl || '';
   return String(item);
 }
+// 缩略图最长边上限：飞书 getCellThumbnailUrls 在部分版本/环境下会忽略质量参数、直接返回原图，
+// 而代码此前把取回的图原样嵌入，导致「缩略图」模式实际导出的是高清原图。
+// 这里在嵌入前兜底缩放到 THUMB_CAP，保证导出图确定 ≤ 阈值（对齐请求的 High=720）。
+const THUMB_CAP = 720;
+let _thumbCappedLogged = false;
+async function resizeToMaxSide(dataUrl, maxSide, quality) {
+  const dims = await imageSize(dataUrl);
+  if (!dims) return dataUrl;
+  const cur = Math.max(dims.w, dims.h);
+  if (cur <= maxSide) return dataUrl; // 已在阈值内，免重编码省 CPU
+  const scale = maxSide / cur;
+  const w = Math.max(1, Math.round(dims.w * scale));
+  const h = Math.max(1, Math.round(dims.h * scale));
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      try { resolve(c.toDataURL('image/jpeg', quality)); } catch (e) { reject(e); }
+    };
+    img.onerror = () => reject(new Error('resize fail'));
+    img.src = dataUrl;
+  });
+}
+async function capThumbnail(obj) {
+  if (!obj || !obj.base64 || !obj.width || !obj.height) return obj;
+  const maxSide = Math.max(obj.width, obj.height);
+  if (maxSide <= THUMB_CAP) return obj; // 已在阈值内，原样返回
+  if (!_thumbCappedLogged) {
+    _thumbCappedLogged = true;
+    log('检测到缩略图超过 ' + THUMB_CAP + 'px（实际约 ' + maxSide + 'px），已自动缩放至 ' + THUMB_CAP + 'px 兜底。', 'warn');
+  }
+  const dataUrl = 'data:' + obj.extension + ';base64,' + obj.base64;
+  const r = await resizeToMaxSide(dataUrl, THUMB_CAP, 0.85);
+  return finalizeExcelImage(r, null);
+}
+
 async function thumbToExcelImage(item) {
   const s = extractThumbStr(item);
   if (!s) return null;
@@ -477,7 +768,7 @@ async function thumbToExcelImage(item) {
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const r = await blobToImageResult(await resp.blob());
       state.stat.thumb++;
-      return r;
+      return capThumbnail(r);
     } catch (e) {
       state.stat.thumb++;
       return null;
@@ -490,7 +781,7 @@ async function thumbToExcelImage(item) {
   const mime = detectMime(raw);
   const dataUrl = 'data:' + mime + ';base64,' + raw;
   state.stat.thumb++;
-  return finalizeExcelImage(dataUrl, null);
+  return capThumbnail(await finalizeExcelImage(dataUrl, null));
 }
 
 async function finalizeExcelImage(dataUrl, forceExt) {
@@ -619,11 +910,12 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
       const failedTokens = failedIdx.map((i) => tokens[i]);
       let thumbs = null;
-      for (const q of [state.ImageQuality.HIGH, state.ImageQuality.MAX]) {
+      const Q = resolveQuality();
+      for (const q of [Q.HIGH, Q.MAX]) {
         try {
           const r = await thumbLimit(() => withRetry(
-            async () => { await sleep(150); return state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q); },
-            { retries: 2, timeoutMs: 12000, label: 'getCellThumbnailUrls(q' + q + ')', baseDelay: 600 }
+            async () => state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
+            { retries: 2, timeoutMs: 12000, label: 'getCellThumbnailUrls(q' + q + ')', baseDelay: 300 }
           ));
           if (r && r.length) { thumbs = r; break; }
           else log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn');
@@ -644,6 +936,9 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       }
     }
 
+    // 缩略图阶段已取到的数量，用于统计「原图回退」计数（交互3）
+    const beforeCount = out.filter(Boolean).length;
+
     // ② 原图兜底（orig 模式主力；或缩略图失败时的兜底）：直连飞书附件 URL 本地下载 + canvas 缩放转 JPEG。
     //    飞书 CDN 偶尔 CORS 拦截导致下载失败，属正常，失败即跳过、不刷屏。
     const stillMissing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
@@ -662,10 +957,25 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           try {
             const resp = await fetchWithTimeout(u, 6000);
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            out[idx] = await blobToExcelImageResized(await resp.blob(), 1200);
+            if (state.imgQuality === 'orig') {
+              // 高清原图模式：保留原始分辨率，不降采样（仅转换 ExcelJS 不支持的格式）。
+              out[idx] = await blobToExcelImage(await resp.blob());
+            } else {
+              // 缩略图模式的兜底：原图取不到时缩放至 1200px 安全网，避免空图（体积可控）。
+              out[idx] = await blobToExcelImageResized(await resp.blob(), 1200);
+            }
           } catch (e) { /* 取不到原图：留空 */ }
         }));
       }
+    }
+
+    // 取图实时计数（交互3）：成功/缺失/原图回退
+    if (state.fetchStat) {
+      const got = out.filter(Boolean).length;
+      const filled = Math.max(0, got - beforeCount);
+      state.fetchStat.ok += got;
+      state.fetchStat.fail += (out.length - got);
+      if (filled > 0) state.fetchStat.fallback += filled;
     }
 
     if (!out.some(Boolean)) log('  该单元格原图与缩略图均不可取', 'err');
@@ -716,176 +1026,148 @@ async function exportExcel() {
   const ExcelJS = window.ExcelJS;
   if (!ExcelJS) { log('ExcelJS 不可用，无法导出。', 'err'); return; }
 
-  try {
-
-  const fieldIds = getSelectedFieldIds();
-  if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
-  const plan = buildColumnPlan(fieldIds);
-  const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-  // 行级并发：每个 worker 负责若干行；但「真正在途的飞书 SDK 取图调用」已由全局信号量 thumbLimit/attachLimit 硬限到 ≤3，
-  // 行并发仅影响取图与写表之间的流水线，不会压垮飞书缩略图服务
-  const concurrency = Math.max(1, Math.min(10, parseInt($('#concurrency').value, 10) || 2));
-  state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
-  state.imgQuality = ($('#imgQuality').value || 'thumb'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
-  state.stat = { orig: 0, thumb: 0, embedded: 0 };
-
-  $('#btnExport').disabled = true;
-  $('#btnLoad').disabled = true;
-  showProgress();
-  setProgress(0);
-  log('开始生成 Excel…');
-
-  const total = state.records.length;
-  const attachFields = [...new Set(plan.filter((c) => c.isAttachment).map((c) => c.fieldId))];
-
-  // ===== 阶段一：并发取图（仅 IO，绝不碰 ExcelJS），按行号存入内存 =====
-  // 关键：先取齐所有图片再写表，避免多 worker 并发写 worksheet 内部状态导致图片错位
-  log('阶段一：并发读取图片（' + total + ' 行）…');
-  const imgData = new Array(total);
-  let cursor = 0;
-  async function fetchWorker() {
-    while (cursor < total) {
-      const idx = cursor++;
-      const rec = state.records[idx];
-      const cache = {};
-      await Promise.all(attachFields.map(async (fid) => {
-        const cell = rec.fields && rec.fields[fid];
-        cache[fid] = await fetchCellImages(fid, rec.recordId, cell);
-      }));
-      imgData[idx] = cache;
-      const done = idx + 1;
-      setProgress(Math.round(done / total * 70));
-      setProgressCount(done + ' / ' + total + ' 行取图');
-      if (idx % 20 === 0) log('  取图 ' + done + ' / ' + total + ' 行');
-    }
+  // 大表预估确认（交互4）
+  const est = estimateExport();
+  if (est.tooLarge) {
+    const ok = await showConfirm('本次导出约 ' + est.rows + ' 行、' + est.imgs + ' 张图片，文件可能较大且耗时较久。确定继续吗？', { okText: '继续导出', cancelText: '取消' });
+    if (!ok) { log('已取消导出（大表确认）。', 'warn'); return; }
   }
-  const fw = [];
-  for (let i = 0; i < concurrency; i++) fw.push(fetchWorker());
-  await Promise.all(fw);
+  // 导出后标记副作用确认（交互1）
+  if (!(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return; }
 
-  // ===== 阶段二：单线程顺序写 Excel（彻底消除并发写表竞态） =====
-  log('阶段二：写入表格（' + total + ' 行）…');
-  const wb = new ExcelJS.Workbook();
-  wb.creator = '多维表图片导出';
-  wb.created = new Date();
-  const ws = wb.addWorksheet(state.tableName || 'Sheet1');
+  try {
+    const fieldIds = getSelectedFieldIds();
+    if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
+    const plan = buildColumnPlan(fieldIds);
+    const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
+    state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
+    state.imgQuality = ($('#imgQuality').value || 'thumb'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.stat = { orig: 0, thumb: 0, embedded: 0 };
+    state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
+    state.aborted = false; // 功能5
 
-  // 表头
-  const headers = plan.map((c) => {
-    const f = state.fields.find((x) => x.id === c.fieldId);
-    if (c.isAttachment && c.imgIndex > 0) return f.name + ' (' + (c.imgIndex + 1) + ')';
-    return f ? f.name : c.fieldId;
-  });
-  ws.addRow(headers);
-  ws.getRow(1).font = { bold: true };
-  ws.getRow(1).alignment = { vertical: 'middle' };
+    $('#btnExport').disabled = true;
+    $('#btnLoad').disabled = true;
+    showCancel(); showProgress(); setProgress(0);
+    log('开始生成 Excel…');
 
-  // 列宽：图片列确保 ≥ DISPLAY_W 像素（字符宽 ≈ 像素/7，+1 字符余量防裁剪）；文字列约 154 像素
-  plan.forEach((c, i) => {
-    const col = ws.getColumn(i + 1);
-    col.width = c.isAttachment ? Math.max(12, Math.ceil(DISPLAY_W / 7) + 1) : 22;
-  });
+    const recs = getEffectiveRecords(); // 功能4：仅导出未标记行
+    const total = recs.length;
+    if (!total) { log('没有可导出的记录（所选「仅导出未标记行」下已全部标记）。', 'warn'); finishExportUI(); return; }
 
-  // 表头行高度固定
-  ws.getRow(1).height = 15;
+    const attachFields = [...new Set(plan.filter((c) => c.isAttachment).map((c) => c.fieldId))];
 
-  for (let idx = 0; idx < total; idx++) {
-    const rec = state.records[idx];
-    const rowNum = idx + 2;
-    const row = ws.getRow(rowNum);
-    let maxRowPx = 0;
-    const attachCache = imgData[idx] || {};
-    for (let ci = 0; ci < plan.length; ci++) {
-      const c = plan[ci];
-      if (c.isAttachment) {
-        const imgs = attachCache[c.fieldId] || [];
-        const img = imgs[c.imgIndex];
-        if (img && img.base64 && img.width && img.height) {
-          const mode = state.imgMode || 'float';
-          // 精确像素尺寸：宽 = DISPLAY_W，高等比缩放 → 绝不变形
-          const Wd = DISPLAY_W;
-          const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
-          let imgId = null;
-          try {
-            imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-            // oneCellAnchor：tl 锚定单元格左上角，ext 为精确像素尺寸，editAs='oneCell' → 图片不随单元格拉伸变形
-            ws.addImage(imgId, {
-              tl: { col: ci, row: idx + 1 },
-              ext: { width: Wd, height: Hd },
-              editAs: 'oneCell',
-            });
-          } catch (e) {
-            log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
-            imgId = null;
-          }
-          if (mode === 'image' && imgId) {
-            // 叠加 IMAGE 公式（Excel 365/新版 WPS 可复制带走），失败不影响已贴入的浮动图
+    const wb = new ExcelJS.Workbook();
+    wb.creator = '多维表图片导出';
+    wb.created = new Date();
+    const ws = wb.addWorksheet(state.tableName || 'Sheet1');
+
+    // 表头
+    const headers = plan.map((c) => {
+      const f = state.fields.find((x) => x.id === c.fieldId);
+      if (c.isAttachment && c.imgIndex > 0) return f.name + ' (' + (c.imgIndex + 1) + ')';
+      return f ? f.name : c.fieldId;
+    });
+    ws.addRow(headers);
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).alignment = { vertical: 'middle' };
+
+    // 列宽：图片列确保 ≥ DISPLAY_W 像素（字符宽 ≈ 像素/7，+1 字符余量防裁剪）；文字列约 154 像素
+    plan.forEach((c, i) => {
+      const col = ws.getColumn(i + 1);
+      col.width = c.isAttachment ? Math.max(12, Math.ceil(DISPLAY_W / 7) + 1) : 22;
+    });
+    ws.getRow(1).height = 15;
+
+    // 单行写入（内部调用 ExcelJS，保持单线程避免竞态）
+    const writeRow = (idx, rec, attachCache) => {
+      const rowNum = idx + 2;
+      const row = ws.getRow(rowNum);
+      let maxRowPx = 0;
+      for (let ci = 0; ci < plan.length; ci++) {
+        const c = plan[ci];
+        if (c.isAttachment) {
+          const imgs = attachCache[c.fieldId] || [];
+          const img = imgs[c.imgIndex];
+          if (img && img.base64 && img.width && img.height) {
+            const Wd = DISPLAY_W;
+            const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
             try {
-              const src = 'data:' + img.extension + ';base64,' + img.base64;
-              const r = await resizeImage(src, DISPLAY_W, 0.85);
-              if (r.length <= 32000) {
-                row.getCell(ci + 1).value = { formula: 'IMAGE("' + r + '",1)' };
-                state.stat.embedded++;
+              const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+              ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
+              if (state.imgMode === 'image') {
+                try {
+                  const src = 'data:' + img.extension + ';base64,' + img.base64;
+                  const r = resizeImage(src, DISPLAY_W, 0.85);
+                  Promise.resolve(r).then((rd) => { if (rd && rd.length <= 32000) { row.getCell(ci + 1).value = { formula: 'IMAGE("' + rd + '",1)' }; state.stat.embedded++; } });
+                } catch (e) { /* 公式失败无影响 */ }
               }
-            } catch (e) { /* 公式失败无影响 */ }
+            } catch (e) {
+              log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
+            }
+            if (Hd > maxRowPx) maxRowPx = Hd;
           }
-          // 行高按图片等比缩放后的像素高度来设置
-          if (Hd > maxRowPx) maxRowPx = Hd;
+        } else {
+          const f = state.fields.find((x) => x.id === c.fieldId);
+          row.getCell(ci + 1).value = formatText(rec.fields ? rec.fields[c.fieldId] : undefined);
+          if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
         }
-      } else {
-        const f = state.fields.find((x) => x.id === c.fieldId);
-        row.getCell(ci + 1).value = formatText(rec.fields ? rec.fields[c.fieldId] : undefined);
-        if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
       }
+      row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 4);
+    };
+
+    // 功能6：分块取图→写表→释放，避免全量 base64 驻留内存导致 OOM
+    const CHUNK = 50;
+    let processed = 0;
+    for (let start = 0; start < total; start += CHUNK) {
+      if (state.aborted) break; // 功能5
+      const end = Math.min(start + CHUNK, total);
+      const chunk = recs.slice(start, end);
+      const imgData = attachFields.length
+        ? await fetchImagesForRecords(chunk, attachFields, (d) => {
+            setProgress(Math.round((processed + d) / total * 70));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback);
+          })
+        : chunk.map(() => ({}));
+      for (let k = 0; k < chunk.length; k++) writeRow(start + k, chunk[k], imgData[k] || {});
+      processed += chunk.length;
+      setProgress(70 + Math.round(processed / total * 30));
+      setProgressCount(processed + ' / ' + total + ' 行写入');
+      if (processed % 200 === 0) log('  写入第 ' + processed + ' / ' + total + ' 行');
+      if (state.aborted) break;
     }
-    // 行高（pt）≈ 像素高 × 0.75（96dpi），+ 4pt 余量确保图片不被裁剪
-    row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 4);
-    const done = idx + 1;
-    setProgress(70 + Math.round(done / total * 30));
-    setProgressCount(done + ' / ' + total + ' 行写入');
-    if (idx % 50 === 0) log('  写入第 ' + done + ' / ' + total + ' 行');
-  }
 
-  log('正在写入文件…');
-  const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const safe = (state.tableName || 'export').replace(/[\\/:*?"<>|]/g, '_');
-  const stamp = new Date().toISOString().slice(0, 10);
-  a.href = url;
-  a.download = safe + '_图片_' + stamp + '.xlsx';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+    if (state.aborted) { log('已取消导出。', 'warn'); finishExportUI(); return; }
 
-  setProgress(100);
-  let imgTip = '';
-  if (state.imgMode === 'image' && state.stat.embedded > 0) {
-    imgTip = '；图片已贴入单元格（全版本可见），并写入 IMAGE 公式：用 Excel 365 / 新版 WPS 打开时复制单元格可带走图片，旧版自动忽略公式、仍显示贴入图。';
-  } else if (state.imgMode === 'image') {
-    imgTip = '；图片已贴入单元格（全版本可见）；本次图片较大未写入 IMAGE 公式，复制带走需 Excel 365。';
-  } else {
-    imgTip = '；图片以浮动方式贴入单元格（全版本可见）；旧版 Excel 复制单元格不会带走图片（Excel 原生限制）。';
-  }
-  log('导出完成：' + a.download + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + imgTip + '）', 'ok');
-  if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
-    log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
-  }
-  try {
-    await markExported(state.records);
-  } catch (e) {
-    log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
-  }
-  setProgress(100);
+    log('正在写入文件…');
+    const buf = await wb.xlsx.writeBuffer();
+    const name = makeXlsxName();
+    triggerDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
+    setProgress(100);
+    let imgTip = '';
+    if (state.imgMode === 'image' && state.stat.embedded > 0) {
+      imgTip = '；图片已贴入单元格（全版本可见），并写入 IMAGE 公式：用 Excel 365 / 新版 WPS 打开时复制单元格可带走图片，旧版自动忽略公式、仍显示贴入图。';
+    } else if (state.imgMode === 'image') {
+      imgTip = '；图片已贴入单元格（全版本可见）；本次图片较大未写入 IMAGE 公式，复制带走需 Excel 365。';
+    } else {
+      imgTip = '；图片以浮动方式贴入单元格（全版本可见）；旧版 Excel 复制单元格不会带走图片（Excel 原生限制）。';
+    }
+    log('导出完成：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + imgTip + '）', 'ok');
+    if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
+      log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
+    }
+    showToast('Excel 导出完成', name + '（' + total + ' 行 · 图片 原图' + state.stat.orig + '/缩略图' + state.stat.thumb + '）');
+    try {
+      await markExported(recs); // 功能4：只标记本次导出的有效行
+    } catch (e) {
+      log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+    }
+    setProgress(100);
   } catch (e) {
     log('导出异常中断：' + (e && e.message ? e.message : e), 'err');
     setStatus('导出失败（详见运行日志）', 'err');
   } finally {
-    $('#btnExport').disabled = false;
-    $('#btnLoad').disabled = false;
-    hideProgress();
+    finishExportUI();
   }
 }
 
@@ -982,121 +1264,109 @@ async function exportZip() {
   const JSZip = window.JSZip;
   if (!JSZip) { log('JSZip 不可用，无法导出 ZIP。', 'err'); return; }
 
-  try {
-
-  const fieldIds = getSelectedFieldIds();
-  let attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
-  if (!attachFields.length) attachFields = state.fields.filter((f) => f.isAttachment);
-  if (!attachFields.length) { log('没有可用的图片字段。', 'warn'); return; }
-
-  const namingId = $('#namingField').value;
-  state.stat = { orig: 0, thumb: 0 };
-  // 行级并发：每个 worker 负责若干行；但「真正在途的飞书 SDK 取图调用」已由全局信号量 thumbLimit/attachLimit 硬限到 ≤3，
-  // 行并发仅影响取图与写表之间的流水线，不会压垮飞书缩略图服务
-  const concurrency = Math.max(1, Math.min(10, parseInt($('#concurrency').value, 10) || 2));
-
-  $('#btnExport').disabled = true;
-  $('#btnExportZip').disabled = true;
-  $('#btnLoad').disabled = true;
-  showProgress();
-  setProgress(0);
-  log('开始生成图片 ZIP…');
-
-  const total = state.records.length;
-
-  // 阶段一：并发取图（仅 IO），按行号存入内存
-  log('阶段一：并发读取图片（' + total + ' 行）…');
-  const imgData = new Array(total);
-  let cursor = 0;
-  async function fetchWorker() {
-    while (cursor < total) {
-      const idx = cursor++;
-      const rec = state.records[idx];
-      const cache = {};
-      await Promise.all(attachFields.map(async (f) => {
-        const cell = rec.fields && rec.fields[f.id];
-        cache[f.id] = await fetchCellImages(f.id, rec.recordId, cell);
-      }));
-      imgData[idx] = cache;
-      const done = idx + 1;
-      setProgress(Math.round(done / total * 80));
-      setProgressCount(done + ' / ' + total + ' 行取图');
-      if (idx % 20 === 0) log('  取图 ' + done + ' / ' + total + ' 行');
-    }
+  // 大表预估确认（交互4）
+  const est = estimateExport();
+  if (est.tooLarge) {
+    const ok = await showConfirm('本次导出约 ' + est.rows + ' 行、' + est.imgs + ' 张图片，文件可能较大且耗时较久。确定继续吗？', { okText: '继续导出', cancelText: '取消' });
+    if (!ok) { log('已取消导出（大表确认）。', 'warn'); return; }
   }
-  const fw = [];
-  for (let i = 0; i < concurrency; i++) fw.push(fetchWorker());
-  await Promise.all(fw);
+  // 导出后标记副作用确认（交互1）
+  if (!(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return; }
 
-  // 阶段二：单线程写 ZIP
-  log('阶段二：打包 ZIP…');
-  const zip = new JSZip();
-  const used = new Set();
-  const safe = (raw) => {
-    let s = (raw == null ? '' : String(raw)).trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
-    if (s.length > 80) s = s.slice(0, 80);
-    return s;
-  };
-  const uniq = (name) => {
-    if (!used.has(name)) { used.add(name); return name; }
-    let i = 2;
-    while (used.has(name + '_' + i)) i++;
-    const u = name + '_' + i; used.add(u); return u;
-  };
+  try {
+    const fieldIds = getSelectedFieldIds();
+    let attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
+    if (!attachFields.length) attachFields = state.fields.filter((f) => f.isAttachment);
+    if (!attachFields.length) { log('没有可用的图片字段。', 'warn'); return; }
 
-  let fileCount = 0;
-  for (let idx = 0; idx < total; idx++) {
-    const rec = state.records[idx];
-    const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
-    const cache = imgData[idx] || {};
-    for (const f of attachFields) {
-      const imgs = cache[f.id] || [];
-      for (let k = 0; k < imgs.length; k++) {
-        const img = imgs[k];
-        if (!img) continue;
-        const fname = uniq(base + '__' + safe(f.name) + '_' + (k + 1) + '.' + img.extension);
-        zip.file(fname, img.base64, { base64: true });
-        fileCount++;
+    const namingId = $('#namingField').value;
+    state.stat = { orig: 0, thumb: 0 };
+    state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
+    state.aborted = false; // 功能5
+
+    $('#btnExport').disabled = true;
+    $('#btnExportZip').disabled = true;
+    $('#btnLoad').disabled = true;
+    showCancel(); showProgress(); setProgress(0);
+    log('开始生成图片 ZIP…');
+
+    const recs = getEffectiveRecords(); // 功能4：仅导出未标记行
+    const total = recs.length;
+    if (!total) { log('没有可导出的记录（所选「仅导出未标记行」下已全部标记）。', 'warn'); finishExportUI(); return; }
+
+    const zip = new JSZip();
+    const used = new Set();
+    const safe = (raw) => {
+      let s = (raw == null ? '' : String(raw)).trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+      if (s.length > 80) s = s.slice(0, 80);
+      return s;
+    };
+    const uniq = (name) => {
+      if (!used.has(name)) { used.add(name); return name; }
+      let i = 2;
+      while (used.has(name + '_' + i)) i++;
+      const u = name + '_' + i; used.add(u); return u;
+    };
+
+    // 功能6：分块取图→写 ZIP→释放，降低内存峰值
+    const CHUNK = 50;
+    let processed = 0;
+    let fileCount = 0;
+    for (let start = 0; start < total; start += CHUNK) {
+      if (state.aborted) break; // 功能5
+      const end = Math.min(start + CHUNK, total);
+      const chunk = recs.slice(start, end);
+      const imgData = attachFields.length
+        ? await fetchImagesForRecords(chunk, attachFields.map((f) => f.id), (d) => {
+            setProgress(Math.round((processed + d) / total * 80));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback);
+          })
+        : chunk.map(() => ({}));
+      for (let k = 0; k < chunk.length; k++) {
+        const rec = chunk[k];
+        const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
+        const cache = imgData[k] || {};
+        for (const f of attachFields) {
+          const imgs = cache[f.id] || [];
+          for (let m = 0; m < imgs.length; m++) {
+            const img = imgs[m];
+            if (!img) continue;
+            const fname = uniq(base + '__' + safe(f.name) + '_' + (m + 1) + '.' + img.extension);
+            zip.file(fname, img.base64, { base64: true });
+            fileCount++;
+          }
+        }
       }
+      processed += chunk.length;
+      setProgress(80 + Math.round(processed / total * 20));
+      setProgressCount(processed + ' / ' + total + ' 行 · ' + fileCount + ' 张图');
+      if (state.aborted) break;
     }
-    const done = idx + 1;
-    setProgress(80 + Math.round(done / total * 20));
-    setProgressCount(done + ' / ' + total + ' 行 · ' + fileCount + ' 张图');
-    if (idx % 50 === 0) log('  打包第 ' + done + ' / ' + total + ' 行');
-  }
 
-  log('正在打包 ZIP（共 ' + fileCount + ' 张图片）…');
-  const blob = await zip.generateAsync({ type: 'blob' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const safeName = (state.tableName || 'export').replace(/[\\/:*?"<>|]/g, '_');
-  const stamp = new Date().toISOString().slice(0, 10);
-  a.href = url;
-  a.download = safeName + '_图片_' + stamp + '.zip';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+    if (state.aborted) { log('已取消导出。', 'warn'); finishExportUI(); return; }
 
-  setProgress(100);
-  log('导出完成：' + a.download + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
-  if (state.stat.orig === 0 && state.stat.thumb > 0) {
-    log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
-  }
-  try {
-    await markExported(state.records);
-  } catch (e) {
-    log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
-  }
-  setProgress(100);
+    log('正在打包 ZIP（共 ' + fileCount + ' 张图片）…');
+    // 图片本身已压缩，STORE（不重压缩）显著快于默认 DEFLATE，且体积几乎不变（打包提速）
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+    const name = makeZipName();
+    triggerDownload(blob, name);
+    setProgress(100);
+    log('导出完成：' + name + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
+    if (state.stat.orig === 0 && state.stat.thumb > 0) {
+      log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
+    }
+    showToast('ZIP 导出完成', name + '（' + fileCount + ' 张图片）');
+    try {
+      await markExported(recs); // 功能4：只标记本次导出的有效行
+    } catch (e) {
+      log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+    }
+    setProgress(100);
   } catch (e) {
     log('ZIP 导出异常中断：' + (e && e.message ? e.message : e), 'err');
     setStatus('导出失败（详见运行日志）', 'err');
   } finally {
-    $('#btnExport').disabled = false;
-    $('#btnExportZip').disabled = false;
-    $('#btnLoad').disabled = false;
-    hideProgress();
+    finishExportUI();
   }
 }
 
@@ -1109,13 +1379,29 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnExport').addEventListener('click', exportExcel);
   $('#btnExportZip').addEventListener('click', exportZip);
   $('#tableSelect').addEventListener('change', (e) => switchTable(e.target.value));
-  $('#btnSelectAll').addEventListener('click', () => selectAllFields(true));
-  $('#btnClearAll').addEventListener('click', () => selectAllFields(false));
-  $('#btnSelectImg').addEventListener('click', selectImageFields);
+  // 字段选择变化即记忆（功能8）
+  $('#btnSelectAll').addEventListener('click', () => { selectAllFields(true); saveSelection(); });
+  $('#btnClearAll').addEventListener('click', () => { selectAllFields(false); saveSelection(); });
+  $('#btnSelectImg').addEventListener('click', () => { selectImageFields(); saveSelection(); });
   // 导出字段折叠下拉
   $('#fieldToggle').addEventListener('click', toggleFieldDropdown);
   $('#fieldToggle').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFieldDropdown(); } });
-  $('#fieldList').addEventListener('change', updateFieldSummary);
+  $('#fieldList').addEventListener('change', () => { updateFieldSummary(); saveSelection(); });
+  // 常用设置变化即记忆（功能8）
+  ['imgQuality', 'imgMode', 'imgWidth', 'concurrency', 'onlyUnmarked', 'namingField', 'markField'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', saveSettings);
+  });
+  // 取消导出（功能5）
+  $('#btnCancel').addEventListener('click', () => { state.aborted = true; log('正在取消，请稍候…', 'warn'); });
+  // 导出前预览（UI1）
+  $('#previewToggle').addEventListener('click', () => {
+    const panel = $('#previewPanel');
+    const collapsed = panel.classList.toggle('collapsed');
+    const chev = $('#previewToggle').querySelector('.chev');
+    if (chev) chev.classList.toggle('collapsed', collapsed);
+  });
+  $('#btnLoadPreview').addEventListener('click', loadPreviewThumbs);
   // 设置弹窗
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnCloseSettings').addEventListener('click', closeSettings);
@@ -1128,9 +1414,10 @@ window.addEventListener('DOMContentLoaded', () => {
     const chev = $('#logToggle').querySelector('.chev');
     if (chev) chev.classList.toggle('collapsed', collapsed);
   });
+  // 速度优化：初始化与 ExcelJS 加载并行，先尽快进入可用状态
+  init();
   ensureExcelJS().then((ok) => {
     if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');
-    init();
   });
   ensureJSZip(); // 后台预载，不阻塞
 });

@@ -31,7 +31,7 @@
           <p class="subtitle">飞书每行图片一键导出带图表格</p>
         </div>
       </div>
-      <button id="btnSettings" class="icon-btn" title="更多设置" aria-label="更多设置">⚙</button>
+      <button id="btnSettings" class="text-btn" title="更多设置" aria-label="更多设置">设置 <span aria-hidden="true">⚙</span></button>
     </header>
 
     <div id="status" class="status status-idle">
@@ -42,6 +42,7 @@
       <div class="progress-meta">
         <span id="progressPct">0%</span>
         <span id="progressCount"></span>
+        <button id="btnCancel" class="mini-cancel hidden" title="取消导出" aria-label="取消导出">取消</button>
       </div>
       <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
     </div>
@@ -97,10 +98,24 @@
       <p class="muted xs">质量：缩略图由飞书直接返回、不逐个联网，最快最稳；高清原图直连飞书附件（无需代理），但受 CORS 限制可能回退缩略图。嵌入：贴入图所有版本可见；内嵌额外写 IMAGE 公式，Excel 365/新版 WPS 下复制单元格可带走图片。</p>
     </section>
 
+    <section class="card card-collapsible">
+      <div class="card-head clickable" id="previewToggle" role="button" tabindex="0" aria-expanded="false">
+        <span class="card-title">导出前预览</span>
+        <span class="field-summary" id="previewSummary">加载数据后显示预估</span>
+        <span class="chev collapsed"></span>
+      </div>
+      <div class="field-dropdown collapsed" id="previewPanel">
+        <p class="muted xs">点「加载预览」取首行少量缩略图示意；下方为本次导出规模预估。</p>
+        <button type="button" class="link" id="btnLoadPreview" disabled>加载预览</button>
+        <div id="previewThumbs" class="preview-thumbs"></div>
+        <p id="previewHint" class="muted xs">请先「加载数据」。仅示意，实际以导出为准。</p>
+      </div>
+    </section>
+
     <section class="actions">
-      <button id="btnLoad" class="btn btn-primary block" disabled><span class="step">1</span>加载数据</button>
-      <button id="btnExport" class="btn btn-primary block" disabled><span class="step">2</span>导出 Excel</button>
-      <button id="btnExportZip" class="btn btn-soft block" disabled><span class="step">3</span>导出图片 ZIP</button>
+      <button id="btnLoad" class="btn btn-primary" disabled>加载数据</button>
+      <button id="btnExport" class="btn btn-primary" disabled>导出 Excel（带图）</button>
+      <button id="btnExportZip" class="btn btn-soft" disabled>导出图片 ZIP</button>
       <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
@@ -127,22 +142,48 @@
           <label for="concurrency">并发下载数</label>
           <input id="concurrency" type="number" min="1" max="30" step="1" value="10" class="mini-input" />
         </div>
-        <div class="form-row inline-row">
-          <label for="ignoreView">导出全部记录（忽略筛选/排序）</label>
-          <input id="ignoreView" type="checkbox" />
-        </div>
-        <div class="form-row">
-          <label for="markField">导出后标记</label>
-          <select id="markField"><option value="">不标记</option></select>
-        </div>
-        <div class="form-row">
-          <label for="namingField">ZIP 命名列</label>
-          <select id="namingField"></select>
-        </div>
+      <div class="form-row inline-row">
+        <label for="ignoreView">导出全部记录（忽略筛选/排序）</label>
+        <input id="ignoreView" type="checkbox" />
+      </div>
+      <div class="form-row inline-row">
+        <label for="onlyUnmarked">仅导出未标记行（增量续导）</label>
+        <input id="onlyUnmarked" type="checkbox" />
+      </div>
+      <div class="form-row">
+        <label for="markField">导出后标记</label>
+        <select id="markField"><option value="">不标记</option></select>
+        <p class="muted xs warn-note">选择后，每次导出会在你的多维表里标记已导出行（或新建「已导出」字段）。此操作会修改原表，可手动撤销；首次会弹窗确认。</p>
+      </div>
+      <div class="form-row">
+        <label for="namingField">ZIP 命名列</label>
+        <select id="namingField"></select>
+      </div>
       </div>
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260819e"></script>
+  <!-- 通用确认弹窗（标记副作用确认 / 大表确认） -->
+  <div class="modal-mask" id="confirmModal" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true">
+      <div class="modal-head"><span id="confirmTitle">确认</span></div>
+      <div class="modal-body"><p id="confirmMsg" class="muted"></p></div>
+      <div class="modal-foot">
+        <button class="btn btn-soft" id="confirmCancel">取消</button>
+        <button class="btn btn-primary" id="confirmOk">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 成功 toast（UI2 / 交互5） -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite">
+    <div class="toast-icon" aria-hidden="true">✓</div>
+    <div class="toast-body">
+      <div id="toastTitle" class="toast-title"></div>
+      <div id="toastMsg" class="toast-msg"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js?v=20260827c"></script>
 </body>
 </html>
