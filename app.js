@@ -157,8 +157,8 @@ function applySelection() {
 // 记住/恢复常用导出设置（全局）
 function saveSettings() {
   LS.set('fie_settings', {
-    imgQuality: $('#imgQuality').value,
-    imgMode: $('#imgMode').value,
+    imgQuality: getSeg('imgQuality'),
+    imgMode: getSeg('imgMode'),
     imgWidth: $('#imgWidth').value,
     concurrency: $('#concurrency').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
@@ -168,8 +168,8 @@ function saveSettings() {
 }
 function applySettings() {
   const s = LS.get('fie_settings', {});
-  if (s.imgQuality) $('#imgQuality').value = s.imgQuality;
-  if (s.imgMode) $('#imgMode').value = s.imgMode;
+  if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
+  if (s.imgMode) setSeg('imgMode', s.imgMode);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
   if (s.concurrency) $('#concurrency').value = s.concurrency;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
@@ -408,6 +408,43 @@ async function ensureJSZip() {
     log('JSZip 加载失败：' + e.message, 'err');
     return false;
   }
+}
+
+// ---------- 主题（浅色 + 暗色切换，记忆偏好） ----------
+const THEME_KEY = 'fie_theme';
+function applyThemeClass(theme) {
+  document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+}
+function initTheme() {
+  let theme = LS.get(THEME_KEY, '');
+  if (!theme) theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  applyThemeClass(theme);
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      if (!LS.get(THEME_KEY, '')) applyThemeClass(e.matches ? 'dark' : 'light');
+    });
+  }
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  applyThemeClass(next);
+  LS.set(THEME_KEY, next);
+}
+
+// ---------- 分段控件（质量 / 嵌入方式）取值与赋值 ----------
+function getSeg(id) {
+  const el = document.getElementById(id);
+  if (!el) return '';
+  const active = el.querySelector('.seg-btn[aria-pressed="true"]');
+  return active ? active.dataset.val : '';
+}
+function setSeg(id, val) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.querySelectorAll('.seg-btn').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.val === val));
+  });
 }
 
 // ---------- 初始化 ----------
@@ -1128,8 +1165,8 @@ async function exportExcel(options) {
     if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return finishExportUI(); }
     const plan = buildColumnPlan(fieldIds);
     const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-    state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
-    state.imgQuality = ($('#imgQuality').value || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgMode = (getSeg('imgMode') || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
+    state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
     state.aborted = false; // 功能5
@@ -1390,7 +1427,7 @@ async function exportZip(options) {
     state.fetchBytes = 0;
     state.failPairs = new Set();
     state.failRows = new Set();
-    state.imgQuality = ($('#imgQuality').value || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
 
     showCancel(); showProgress(); setProgress(0);
     log('开始生成图片 ZIP…');
@@ -1489,8 +1526,8 @@ function getSchemes() {
 function setSchemes(s) { LS.set(SCHEME_KEY, s); }
 function readSettingsFromUI() {
   return {
-    imgQuality: $('#imgQuality').value,
-    imgMode: $('#imgMode').value,
+    imgQuality: getSeg('imgQuality'),
+    imgMode: getSeg('imgMode'),
     imgWidth: $('#imgWidth').value,
     concurrency: $('#concurrency').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
@@ -1501,8 +1538,8 @@ function readSettingsFromUI() {
 }
 function applySettingsToUI(s) {
   if (!s) return;
-  if (s.imgQuality) $('#imgQuality').value = s.imgQuality;
-  if (s.imgMode) $('#imgMode').value = s.imgMode;
+  if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
+  if (s.imgMode) setSeg('imgMode', s.imgMode);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
   if (s.concurrency) $('#concurrency').value = s.concurrency;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
@@ -1630,8 +1667,19 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#fieldToggle').addEventListener('click', toggleFieldDropdown);
   $('#fieldToggle').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFieldDropdown(); } });
   $('#fieldList').addEventListener('change', () => { updateFieldSummary(); saveSelection(); });
+  // 主题切换
+  initTheme();
+  $('#btnTheme').addEventListener('click', toggleTheme);
+  // 分段控件点击即记忆（功能8）
+  ['imgQuality', 'imgMode'].forEach((id) => {
+    const seg = document.getElementById(id);
+    if (!seg) return;
+    seg.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => { setSeg(id, btn.dataset.val); saveSettings(); });
+    });
+  });
   // 常用设置变化即记忆（功能8）
-  ['imgQuality', 'imgMode', 'imgWidth', 'concurrency', 'onlyUnmarked', 'namingField', 'markField'].forEach((id) => {
+  ['imgWidth', 'concurrency', 'onlyUnmarked', 'namingField', 'markField'].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', saveSettings);
   });

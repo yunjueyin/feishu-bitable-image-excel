@@ -4,34 +4,66 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>多维表图片导出 Excel</title>
+  <!-- 首屏即应用主题，避免闪烁 -->
+  <script>
+    (function () { try { var t = localStorage.getItem('fie_theme'); if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; document.documentElement.setAttribute('data-theme', t); } catch (e) {} })();
+  </script>
   <!-- 字体：Inter 渐进增强（英文/数字更现代），被墙自动降级系统字体 -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260827e" />
+  <link rel="stylesheet" href="./styles.css?v=20260827f" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/jszip.min.js"></script>
 </head>
 <body>
+  <!-- 图标精灵：线性精致描边，currentColor 着色，零网络依赖 -->
+  <svg class="sprite" aria-hidden="true" style="display:none" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="icon-logo" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="M21 15l-5-5L5 21"/></symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="icon-table" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></symbol>
+    <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="M21 15l-5-5L5 21"/></symbol>
+    <symbol id="icon-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="icon-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="icon-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></symbol>
+    <symbol id="icon-retry" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></symbol>
+    <symbol id="icon-image-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M21 15V5a2 2 0 0 0-2-2H9M5 21l5-5M21 15l-5-5"/></symbol>
+    <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></symbol>
+    <symbol id="icon-text" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></symbol>
+    <symbol id="icon-number" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+    <symbol id="icon-sparkles" viewBox="0 0 24 24"><path d="M12 2l2.9 6.1 6.6.9-4.8 4.6 1.2 6.6L12 18.8 6.1 21.2 7.3 14.6 2.5 10 9.1 9.1z"/></symbol>
+  </svg>
   <main class="app">
     <header class="app-header">
       <div class="brand">
         <div class="brand-logo">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">
-          <rect x="3" y="3" width="18" height="18" rx="4.5" fill="#3370ff" opacity="0.14"/>
-          <rect x="3" y="3" width="18" height="18" rx="4.5" stroke="#3370ff" stroke-width="1.6"/>
-          <circle cx="8.8" cy="8.8" r="1.7" fill="#3370ff"/>
-          <path d="M5.2 17.2 9.4 13 12.2 15.8 15.6 12.4 18.8 15.6" stroke="#3370ff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        </svg>
-      </div>
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-logo"/></svg>
+        </div>
         <div class="brand-text">
           <h1>多维表图片导出 Excel</h1>
           <p class="subtitle">飞书每行图片一键导出带图表格</p>
         </div>
       </div>
-      <button id="btnSettings" class="text-btn" title="更多设置" aria-label="更多设置">设置 <span aria-hidden="true">⚙</span></button>
+      <div class="header-actions">
+        <button id="btnTheme" class="icon-btn" type="button" title="切换主题" aria-label="切换主题">
+          <svg class="ico ico-moon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-moon"/></svg>
+          <svg class="ico ico-sun" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sun"/></svg>
+        </button>
+        <button id="btnSettings" class="icon-btn" type="button" title="更多设置" aria-label="更多设置">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-settings"/></svg>
+        </button>
+      </div>
     </header>
 
     <div id="status" class="status status-idle">
@@ -49,7 +81,7 @@
 
     <section class="card">
       <div class="card-head">
-        <span class="card-title">数据表</span>
+        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-table"/></svg>数据表</span>
         <span id="count" class="tag"></span>
       </div>
       <select id="tableSelect" class="select hidden"></select>
@@ -58,9 +90,9 @@
 
     <section class="card card-collapsible">
       <div class="card-head clickable" id="fieldToggle" role="button" tabindex="0" aria-expanded="false">
-        <span class="card-title">导出字段</span>
+        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image"/></svg>导出字段</span>
         <span class="field-summary" id="fieldSummary">未选择</span>
-        <span class="chev collapsed"></span>
+        <span class="chev collapsed"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
       </div>
       <div class="field-dropdown collapsed" id="fieldDropdown">
         <div class="field-toolbar">
@@ -72,25 +104,25 @@
         <div id="fieldList" class="field-list">
           <div class="placeholder">请先在飞书中打开本插件并选择数据表</div>
         </div>
-        <p id="fieldEmptyHint" class="empty-hint hidden">尚未勾选任何列。请至少勾选一个「图片列」（或点「仅图片」），否则导出将无内容。</p>
+        <p id="fieldEmptyHint" class="empty-hint hidden"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image-off"/></svg><span>尚未勾选任何列。请至少勾选一个「图片列」（或点「仅图片」），否则导出将无内容。</span></p>
       </div>
     </section>
 
     <section class="card">
-      <div class="card-head"><span class="card-title">图片设置</span></div>
+      <div class="card-head"><span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sliders"/></svg>图片设置</span></div>
       <div class="form-row inline-row">
         <label for="imgQuality">图片质量</label>
-        <select id="imgQuality" class="mini-select">
-          <option value="orig" selected>高清原图（直连飞书·推荐）</option>
-          <option value="thumb">缩略图（最快·最稳·体积小）</option>
-        </select>
+        <div class="seg" id="imgQuality" role="radiogroup" aria-label="图片质量">
+          <button type="button" class="seg-btn" data-val="orig" aria-pressed="true">高清原图</button>
+          <button type="button" class="seg-btn" data-val="thumb" aria-pressed="false">缩略图</button>
+        </div>
       </div>
       <div class="form-row inline-row">
         <label for="imgMode">图片嵌入方式</label>
-        <select id="imgMode" class="mini-select">
-          <option value="float">贴入单元格（推荐·全版本可见）</option>
-          <option value="image">内嵌 IMAGE 公式（Excel 365/新版 WPS 可复制）</option>
-        </select>
+        <div class="seg" id="imgMode" role="radiogroup" aria-label="图片嵌入方式">
+          <button type="button" class="seg-btn" data-val="float" aria-pressed="true">贴入单元格</button>
+          <button type="button" class="seg-btn" data-val="image" aria-pressed="false">IMAGE 公式</button>
+        </div>
       </div>
       <div class="form-row inline-row">
         <label for="imgWidth">图片显示宽度（像素）</label>
@@ -101,9 +133,9 @@
 
     <section class="card card-collapsible">
       <div class="card-head clickable" id="previewToggle" role="button" tabindex="0" aria-expanded="false">
-        <span class="card-title">导出前预览</span>
+        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-eye"/></svg>导出前预览</span>
         <span class="field-summary" id="previewSummary">加载数据后显示预估</span>
-        <span class="chev collapsed"></span>
+        <span class="chev collapsed"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
       </div>
       <div class="field-dropdown collapsed" id="previewPanel">
         <p class="muted xs">点「加载预览」取首行少量缩略图示意；下方为本次导出规模预估。</p>
@@ -114,18 +146,18 @@
     </section>
 
     <section class="actions">
-      <p id="dataEmptyHint" class="empty-hint warn-hint hidden">当前表（或当前筛选）没有可导出的数据行。请检查筛选条件或切换数据表。</p>
-      <button id="btnLoad" class="btn btn-primary" disabled>加载数据</button>
-      <button id="btnExport" class="btn btn-primary" disabled>导出 Excel（带图）</button>
-      <button id="btnExportZip" class="btn btn-soft" disabled>导出图片 ZIP</button>
-      <button id="btnRetryFailed" class="btn btn-soft hidden">仅重试失败项</button>
+      <p id="dataEmptyHint" class="empty-hint warn-hint hidden"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-inbox"/></svg><span>当前表（或当前筛选）没有可导出的数据行。请检查筛选条件或切换数据表。</span></p>
+      <button id="btnLoad" class="btn btn-primary" type="button" disabled><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg>加载数据</button>
+      <button id="btnExport" class="btn btn-primary" type="button" disabled><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-download"/></svg>导出 Excel（带图）</button>
+      <button id="btnExportZip" class="btn btn-soft" type="button" disabled><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-archive"/></svg>导出图片 ZIP</button>
+      <button id="btnRetryFailed" class="btn btn-soft hidden" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg>仅重试失败项</button>
       <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
     <section class="card log-card">
       <div class="card-head clickable" id="logToggle">
-        <span class="card-title">运行日志</span>
-        <span class="chev">›</span>
+        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-list"/></svg>运行日志</span>
+        <span class="chev"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
       </div>
       <div id="logPanel" class="log-panel collapsed">
         <div id="log" class="log"></div>
@@ -137,8 +169,9 @@
   <div class="modal-mask" id="settingsModal" hidden>
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-settings"/></svg>
         <span>更多设置</span>
-        <button class="icon-btn" id="btnCloseSettings" aria-label="关闭">✕</button>
+        <button class="icon-btn" id="btnCloseSettings" type="button" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
       </div>
       <div class="modal-body">
         <!-- 导出方案（多套命名预设） -->
@@ -184,7 +217,7 @@
   <!-- 通用确认弹窗（标记副作用确认 / 大表确认） -->
   <div class="modal-mask" id="confirmModal" hidden>
     <div class="modal modal-sm" role="dialog" aria-modal="true">
-      <div class="modal-head"><span id="confirmTitle">确认</span></div>
+      <div class="modal-head"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-alert"/></svg><span id="confirmTitle">确认</span></div>
       <div class="modal-body"><p id="confirmMsg" class="muted"></p></div>
       <div class="modal-foot">
         <button class="btn btn-soft" id="confirmCancel">取消</button>
@@ -195,13 +228,13 @@
 
   <!-- 成功 toast（UI2 / 交互5） -->
   <div id="toast" class="toast hidden" role="status" aria-live="polite">
-    <div class="toast-icon" aria-hidden="true">✓</div>
+    <div class="toast-icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-check"/></svg></div>
     <div class="toast-body">
       <div id="toastTitle" class="toast-title"></div>
       <div id="toastMsg" class="toast-msg"></div>
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260827e"></script>
+  <script type="module" src="./app.js?v=20260827f"></script>
 </body>
 </html>
