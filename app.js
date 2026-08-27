@@ -34,7 +34,7 @@ const state = {
   maxAttach: {},     // fieldId -> 该字段单格最多附件数
   loaded: false,
   stat: { orig: 0, thumb: 0 }, // 本次导出图片来源统计
-  fetchStat: { ok: 0, fail: 0, fallback: 0 }, // 取图实时计数（交互3）
+  fetchStat: { ok: 0, fail: 0, fallback: 0, empty: 0 }, // 取图实时计数（交互3）；empty=空图片单元格(不计失败/不重试)
   aborted: false, // 取消标志（功能5）
   onlyUnmarked: false, // 仅导出未标记行（功能4）
   imgQuality: 'orig', // orig=高清原图(本地直连飞书·默认推荐) / thumb=缩略图(最快·最稳)
@@ -979,8 +979,13 @@ function fetchWithTimeout(url, ms) {
 //  - 缩略图模式（默认·最快）：直接取飞书缩略图 base64，不跨域、不需要任何代理、不逐个联网
 //  - 高清原图模式：本地直连飞书附件 URL（不借助代理），失败再回退缩略图
 async function fetchCellImages(fieldId, recordId, cellVal) {
-  const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
-  if (!tokens.length) return [];
+  const rawItems = Array.isArray(cellVal) ? cellVal : [];
+  const tokens = rawItems.filter((x) => x && x.token).map((x) => x.token);
+  if (!tokens.length) {
+    // 空单元格：无有效图片 token（字段缺失 / 空数组 / 占位无图）。直接返回——不取图、不计失败、不进「仅重试失败项」。
+    if (state.fetchStat) state.fetchStat.empty += 1;
+    return [];
+  }
   const empty = () => new Array(tokens.length).fill(null);
   const out = empty();
   const q = state.imgQuality;
@@ -1168,7 +1173,7 @@ async function exportExcel(options) {
     state.imgMode = (getSeg('imgMode') || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
-    state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
+    state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0 }; // 交互3；empty=空单元格
     state.aborted = false; // 功能5
     state.lastExport = 'excel';
     state.retryMode = !!options.skipConfirm;
@@ -1244,6 +1249,11 @@ async function exportExcel(options) {
       row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 4);
     };
 
+    // 仅勾选图片列时，图片全空的数据行无内容可导出，直接跳过（紧凑写行，不占 Excel 物理行）
+    const onlyImgCols = attachFields.length > 0 && attachFields.length === plan.length;
+    let outRow = 0;            // 实际写入 Excel 的紧凑行号（0 基；表头为第 1 行）
+    let skippedEmptyRows = 0;
+
     // 功能6：分块取图→写表→释放，避免全量 base64 驻留内存导致 OOM
     const CHUNK = 50;
     let processed = 0;
@@ -1254,13 +1264,20 @@ async function exportExcel(options) {
       const imgData = attachFields.length
         ? await fetchImagesForRecords(chunk, attachFields, (d) => {
             setProgress(Math.round((processed + d) / total * 70));
-            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + ' 空' + state.fetchStat.empty + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
-      for (let k = 0; k < chunk.length; k++) writeRow(start + k, chunk[k], imgData[k] || {});
+      for (let k = 0; k < chunk.length; k++) {
+        const cache = imgData[k] || {};
+        // 仅选图片列且该行所有图片列均空 → 跳过（无内容可导出，且 Excel 无其他列数据）
+        const allImgEmpty = attachFields.length > 0 && attachFields.every((fid) => ((cache[fid] || []).length === 0));
+        if (onlyImgCols && allImgEmpty) { skippedEmptyRows++; continue; }
+        writeRow(outRow, chunk[k], cache);
+        outRow++;
+      }
       processed += chunk.length;
       setProgress(70 + Math.round(processed / total * 30));
-      setProgressCount(processed + ' / ' + total + ' 行写入' + (state.fetchBytes ? ' · 已取图 ' + humanSize(state.fetchBytes) : ''));
+      setProgressCount(processed + ' / ' + total + ' 行写入 · 已写 ' + outRow + ' 行' + (state.fetchBytes ? ' · 已取图 ' + humanSize(state.fetchBytes) : ''));
       if (processed % 200 === 0) log('  写入第 ' + processed + ' / ' + total + ' 行');
       if (state.aborted) break;
     }
@@ -1282,6 +1299,8 @@ async function exportExcel(options) {
     }
     const fileSize = buf.byteLength;
     log('导出完成：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + imgTip + '）', 'ok');
+    if (skippedEmptyRows > 0) log('已跳过 ' + skippedEmptyRows + ' 行（仅选图片列且图片全空，无内容可导出）', 'warn');
+    if (state.fetchStat.empty > 0) log('空图片单元格 ' + state.fetchStat.empty + ' 个已识别（不计失败、不重试）', 'info');
     if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
       log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
     }
@@ -1420,7 +1439,7 @@ async function exportZip(options) {
 
     const namingId = $('#namingField').value;
     state.stat = { orig: 0, thumb: 0 };
-    state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
+    state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0 }; // 交互3；empty=空单元格
     state.aborted = false; // 功能5
     state.lastExport = 'zip';
     state.retryMode = !!options.skipConfirm;
@@ -1450,6 +1469,8 @@ async function exportZip(options) {
       const u = name + '_' + i; used.add(u); return u;
     };
 
+    // ZIP 仅导出图片：图片全空的数据行无文件可写，直接跳过
+    let skippedEmptyRows = 0;
     // 功能6：分块取图→写 ZIP→释放，降低内存峰值
     const CHUNK = 50;
     let processed = 0;
@@ -1461,13 +1482,15 @@ async function exportZip(options) {
       const imgData = attachFields.length
         ? await fetchImagesForRecords(chunk, attachFields.map((f) => f.id), (d) => {
             setProgress(Math.round((processed + d) / total * 80));
-            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + ' 空' + state.fetchStat.empty + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
       for (let k = 0; k < chunk.length; k++) {
+        const cache = imgData[k] || {};
+        const allImgEmpty = attachFields.length > 0 && attachFields.every((fid) => ((cache[fid] || []).length === 0));
+        if (allImgEmpty) { skippedEmptyRows++; continue; } // ZIP 仅图片：全空行无内容，跳过
         const rec = chunk[k];
         const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
-        const cache = imgData[k] || {};
         for (const f of attachFields) {
           const imgs = cache[f.id] || [];
           for (let m = 0; m < imgs.length; m++) {
@@ -1495,6 +1518,8 @@ async function exportZip(options) {
     setProgress(100);
     const fileSize = blob.size;
     log('导出完成：' + name + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + '）', 'ok');
+    if (skippedEmptyRows > 0) log('已跳过 ' + skippedEmptyRows + ' 行（图片全空，ZIP 无内容可写）', 'warn');
+    if (state.fetchStat.empty > 0) log('空图片单元格 ' + state.fetchStat.empty + ' 个已识别（不计失败、不重试）', 'info');
     if (state.stat.orig === 0 && state.stat.thumb > 0) {
       log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
     }
