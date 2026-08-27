@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260819e" />
+  <link rel="stylesheet" href="./styles.css?v=20260827e" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -72,6 +72,7 @@
         <div id="fieldList" class="field-list">
           <div class="placeholder">请先在飞书中打开本插件并选择数据表</div>
         </div>
+        <p id="fieldEmptyHint" class="empty-hint hidden">尚未勾选任何列。请至少勾选一个「图片列」（或点「仅图片」），否则导出将无内容。</p>
       </div>
     </section>
 
@@ -113,9 +114,11 @@
     </section>
 
     <section class="actions">
+      <p id="dataEmptyHint" class="empty-hint warn-hint hidden">当前表（或当前筛选）没有可导出的数据行。请检查筛选条件或切换数据表。</p>
       <button id="btnLoad" class="btn btn-primary" disabled>加载数据</button>
       <button id="btnExport" class="btn btn-primary" disabled>导出 Excel（带图）</button>
       <button id="btnExportZip" class="btn btn-soft" disabled>导出图片 ZIP</button>
+      <button id="btnRetryFailed" class="btn btn-soft hidden">仅重试失败项</button>
       <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
@@ -138,6 +141,21 @@
         <button class="icon-btn" id="btnCloseSettings" aria-label="关闭">✕</button>
       </div>
       <div class="modal-body">
+        <!-- 导出方案（多套命名预设） -->
+        <div class="form-row">
+          <label>导出方案（命名预设）</label>
+          <div class="scheme-row">
+            <input id="schemeName" type="text" placeholder="方案名，如：产品图高清" class="mini-input wide" />
+            <button type="button" class="link" id="btnSchemeSave">保存当前</button>
+          </div>
+          <select id="schemeSelect" class="mini-select wide"></select>
+          <div class="scheme-btns">
+            <button type="button" class="link" id="btnSchemeApply">应用</button>
+            <button type="button" class="link" id="btnSchemeDelete">删除</button>
+            <button type="button" class="link" id="btnSchemeDefault">设为默认</button>
+          </div>
+          <p class="muted xs">把「字段勾选＋图片质量＋嵌入方式＋命名列」存为命名方案，一键切换；可设一个默认方案，加载数据时自动应用。</p>
+        </div>
         <div class="form-row inline-row">
           <label for="concurrency">并发下载数</label>
           <input id="concurrency" type="number" min="1" max="30" step="1" value="10" class="mini-input" />
@@ -184,6 +202,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260827d"></script>
+  <script type="module" src="./app.js?v=20260827e"></script>
 </body>
 </html>

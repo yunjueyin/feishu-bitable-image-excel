@@ -511,6 +511,27 @@ body {
 /* 操作按钮在移动端仍占满一行（UI3 去掉步骤序号后保持易点） */
 .actions .btn { width: 100%; }
 
+/* 导出方案（多套命名预设） */
+.scheme-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.scheme-row .mini-input.wide { flex: 1; min-width: 0; }
+.mini-select.wide, .mini-input.wide { width: 100%; max-width: 100%; min-width: 0; }
+.scheme-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+/* 空状态引导（未选字段 / 无数据） */
+.empty-hint {
+  font-size: 12px; line-height: 1.5;
+  color: var(--text-soft);
+  background: #fff7ec;
+  border: 1px solid #ffe2b8;
+  border-radius: var(--radius-xs);
+  padding: 10px 12px;
+  margin: 10px 0 0;
+}
+.empty-hint.warn-hint {
+  background: #fdecec; border-color: #f7c5c5; color: #c0392b;
+}
+.actions .empty-hint { width: 100%; margin: 0 0 4px; }
+
 /* ---------- 滚动条美化（webkit） ---------- */
 .field-list::-webkit-scrollbar,
 .log::-webkit-scrollbar { width: 8px; }

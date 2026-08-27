@@ -38,6 +38,13 @@ const state = {
   aborted: false, // 取消标志（功能5）
   onlyUnmarked: false, // 仅导出未标记行（功能4）
   imgQuality: 'orig', // orig=高清原图(本地直连飞书·默认推荐) / thumb=缩略图(最快·最稳)
+  imgCache: {},      // 会话内已取图缓存（断点续传/仅补缺失），键=质量|字段|记录|序号
+  failPairs: new Set(),  // 本次导出失败图片键集合（供「仅重试失败项」）
+  failRows: new Set(),   // 本次导出存在失败图片的记录 id
+  exporting: false,  // 导出进行中（防重复点击）
+  lastExport: null,  // 'excel' | 'zip'，记录上次导出类型（供重试复用）
+  retryMode: false,  // 当前是否为「仅重试失败项」运行
+  fetchBytes: 0,     // 本次导出已取图字节累计（实时体积预估）
 };
 
 // ---------- 工具 ----------
@@ -65,6 +72,17 @@ function showProgress() { const b = $('#progressBox'); if (b) b.classList.remove
 function hideProgress() { const b = $('#progressBox'); if (b) b.classList.add('hidden'); }
 function setProgressCount(text) { const c = $('#progressCount'); if (c) c.textContent = text || ''; }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// 人类可读体积（实时预估导出文件大小）
+function humanSize(n) {
+  n = n || 0;
+  if (n >= 1048576) return (n / 1048576).toFixed(n >= 10485760 ? 0 : 1) + ' MB';
+  if (n >= 1024) return Math.round(n / 1024) + ' KB';
+  return n + ' B';
+}
+// 累计已取图字节（base64 长度 × 3/4 ≈ 解码后字节数），用于实时体积预估
+function addImgBytes(img) {
+  if (img && img.base64) state.fetchBytes = (state.fetchBytes || 0) + Math.ceil(img.base64.length * 3 / 4);
+}
 // 带超时的 Promise 包装：超过 ms 即 reject，避免飞书 SDK 调用挂起导致整批导出永久卡死
 function withTimeout(promise, ms, label) {
   let timer;
@@ -243,6 +261,8 @@ function finishExportUI() {
   $('#btnLoad').disabled = false;
   hideProgress();
   hideCancel();
+  state.exporting = false;
+  updateRetryButton();
 }
 
 // ---------- 成功 toast（UI2 / 交互5）----------
@@ -515,6 +535,9 @@ function updateFieldSummary() {
   if (!total) { sum.textContent = '无字段'; return; }
   const checked = document.querySelectorAll('#fieldList input[type=checkbox]:checked').length;
   sum.textContent = checked === 0 ? ('共 ' + total + ' 列 · 未选') : ('已选 ' + checked + ' / ' + total + ' 列');
+  // 空状态引导：未勾选任何列时给出友好提示（交互：空状态引导）
+  const eh = $('#fieldEmptyHint');
+  if (eh) eh.classList.toggle('hidden', checked !== 0);
 }
 
 function renderTableSelect(metas, currentId) {
@@ -572,6 +595,7 @@ async function loadData() {
   state.maxAttach = {};
   showProgress();
   setProgress(0);
+  { const deh = $('#dataEmptyHint'); if (deh) deh.classList.add('hidden'); } // 空状态引导：开始时先隐藏
   log('开始读取记录…');
   // 默认按当前视图（含筛选/排序结果）导出全部内容；
   // 仅当用户勾选「忽略筛选/排序 · 导出全部记录」时才拉全部记录
@@ -634,6 +658,10 @@ async function loadData() {
     if (pb) pb.disabled = false;
     setProgress(100);
     log('读取完成，共 ' + all.length + ' 行。', 'ok');
+    // 空状态引导：0 行时给出提示
+    { const deh = $('#dataEmptyHint'); if (deh) deh.classList.toggle('hidden', all.length !== 0); }
+    // 自动应用默认导出方案（若存在）
+    applyDefaultScheme();
   } catch (e) {
     log('读取失败：' + e.message, 'err');
     setStatus('读取数据失败', 'err');
@@ -755,6 +783,23 @@ async function capThumbnail(obj) {
   }
   const dataUrl = 'data:' + obj.extension + ';base64,' + obj.base64;
   const r = await resizeToMaxSide(dataUrl, THUMB_CAP, 0.85);
+  return finalizeExcelImage(r, null);
+}
+
+// 原图超大封顶：高清原图模式保留原始分辨率，但超过 ORIG_CAP 的超大图（如扫描件/全景图）
+// 直接嵌 Excel 会占用巨量内存甚至卡死，这里在嵌入前兜底缩放到 ORIG_CAP 最长边（jpeg 0.9）。
+const ORIG_CAP = 4096;
+let _origCappedLogged = false;
+async function capMaxSide(obj, cap) {
+  if (!obj || !obj.base64 || !obj.width || !obj.height) return obj;
+  const maxSide = Math.max(obj.width, obj.height);
+  if (maxSide <= cap) return obj; // 已在阈值内，原样返回省 CPU
+  if (!_origCappedLogged) {
+    _origCappedLogged = true;
+    log('检测到原图超过 ' + cap + 'px（实际约 ' + maxSide + 'px），已自动封顶至 ' + cap + 'px 防内存爆。', 'warn');
+  }
+  const dataUrl = 'data:' + obj.extension + ';base64,' + obj.base64;
+  const r = await resizeToMaxSide(dataUrl, cap, 0.9);
   return finalizeExcelImage(r, null);
 }
 
@@ -900,32 +945,46 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   const tokens = (Array.isArray(cellVal) ? cellVal : []).filter((x) => x && x.token).map((x) => x.token);
   if (!tokens.length) return [];
   const empty = () => new Array(tokens.length).fill(null);
+  const out = empty();
+  const q = state.imgQuality;
+
+  // 会话缓存（断点续传 / 仅补缺失）：键含 质量|字段|记录|序号，切换质量即失效
+  for (let i = 0; i < tokens.length; i++) {
+    const k = q + '|' + fieldId + '|' + recordId + '|' + i;
+    if (state.imgCache[k]) out[i] = state.imgCache[k];
+  }
+  const need = [];
+  for (let i = 0; i < tokens.length; i++) if (!out[i]) need.push(i);
+  if (!need.length) return out; // 全部命中缓存，直接返回（不计入 fetchStat，省一次空跑）
 
   const run = async () => {
-    const out = empty();
+    const beforeCount = out.filter(Boolean).length;
 
-    // ① 缩略图（SDK 直接返回 base64，无 CORS，最快）：受信号量限流 + 12s 超时 + 轻度重试。
-    //    优先用较快的 HIGH(720)，失败再试 MAX(1280)；720 在飞书侧生成更快，能显著减少超时。
-    if (state.imgQuality !== 'orig') {
-      const failedIdx = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
-      const failedTokens = failedIdx.map((i) => tokens[i]);
+    // ① 缩略图（仅非 orig 模式）：SDK 直接返回 base64，无 CORS，最快。受信号量限流 + 12s 超时 + 轻度重试。
+    if (q !== 'orig') {
+      const needTokens = need.map((i) => tokens[i]);
       let thumbs = null;
       const Q = resolveQuality();
-      for (const q of [Q.HIGH, Q.MAX]) {
+      for (const qq of [Q.HIGH, Q.MAX]) {
         try {
           const r = await thumbLimit(() => withRetry(
-            async () => state.table.getCellThumbnailUrls(failedTokens, fieldId, recordId, q),
-            { retries: 2, timeoutMs: 12000, label: 'getCellThumbnailUrls(q' + q + ')', baseDelay: 300 }
+            async () => state.table.getCellThumbnailUrls(needTokens, fieldId, recordId, qq),
+            { retries: 2, timeoutMs: 12000, label: 'getCellThumbnailUrls(q' + qq + ')', baseDelay: 300 }
           ));
           if (r && r.length) { thumbs = r; break; }
-          else log('  缩略图质量 ' + q + ' 返回空（tokens=' + failedTokens.length + '）', 'warn');
+          else log('  缩略图质量 ' + qq + ' 返回空（tokens=' + needTokens.length + '）', 'warn');
         } catch (e) {
-          log('  缩略图质量 ' + q + ' 失败：' + (e && e.message ? e.message : e), 'warn');
+          log('  缩略图质量 ' + qq + ' 失败：' + (e && e.message ? e.message : e), 'warn');
         }
       }
       if (thumbs) {
-        await Promise.all(failedIdx.map(async (idx, k) => {
-          if (thumbs[k] != null) { try { out[idx] = await thumbToExcelImage(thumbs[k]); } catch (e) {} }
+        await Promise.all(need.map(async (idx, k) => {
+          if (thumbs[k] != null) {
+            try {
+              const im = await thumbToExcelImage(thumbs[k]);
+              if (im) { out[idx] = im; addImgBytes(im); }
+            } catch (e) {}
+          }
         }));
         if (!state._thumbLogged) {
           state._thumbLogged = true;
@@ -936,17 +995,16 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       }
     }
 
-    // 缩略图阶段已取到的数量，用于统计「原图回退」计数（交互3）
-    const beforeCount = out.filter(Boolean).length;
-
     // ② 原图兜底（orig 模式主力；或缩略图失败时的兜底）：直连飞书附件 URL 本地下载 + canvas 缩放转 JPEG。
     //    飞书 CDN 偶尔 CORS 拦截导致下载失败，属正常，失败即跳过、不刷屏。
-    const stillMissing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+    const stillMissing = [];
+    for (let i = 0; i < tokens.length; i++) if (!out[i]) stillMissing.push(i);
     if (stillMissing.length) {
       let urls = [];
       try {
+        const missTokens = stillMissing.map((i) => tokens[i]);
         urls = await attachLimit(() => withRetry(
-          () => state.table.getCellAttachmentUrls(stillMissing.map((i) => tokens[i]), fieldId, recordId),
+          () => state.table.getCellAttachmentUrls(missTokens, fieldId, recordId),
           { retries: 1, timeoutMs: 10000, label: 'getCellAttachmentUrls', baseDelay: 500 }
         ));
       } catch (e) { /* 兜底失败，进入下方空图判断 */ }
@@ -957,15 +1015,26 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           try {
             const resp = await fetchWithTimeout(u, 6000);
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            if (state.imgQuality === 'orig') {
-              // 高清原图模式：保留原始分辨率，不降采样（仅转换 ExcelJS 不支持的格式）。
-              out[idx] = await blobToExcelImage(await resp.blob());
+            let im;
+            if (q === 'orig') {
+              // 高清原图模式：保留原始分辨率，仅对超过 ORIG_CAP(4096) 的超大图封顶防内存爆；
+              // 仅转换 ExcelJS 不支持的格式。
+              im = await capMaxSide(await blobToExcelImage(await resp.blob()), ORIG_CAP);
             } else {
               // 缩略图模式的兜底：原图取不到时缩放至 1200px 安全网，避免空图（体积可控）。
-              out[idx] = await blobToExcelImageResized(await resp.blob(), 1200);
+              im = await blobToExcelImageResized(await resp.blob(), 1200);
             }
+            if (im) { out[idx] = im; addImgBytes(im); }
           } catch (e) { /* 取不到原图：留空 */ }
         }));
+      }
+    }
+
+    // 写入会话缓存（供断点续传 / 仅补缺失 / 仅重试失败项复用）
+    for (let i = 0; i < tokens.length; i++) {
+      if (out[i]) {
+        const k = q + '|' + fieldId + '|' + recordId + '|' + i;
+        state.imgCache[k] = out[i];
       }
     }
 
@@ -976,6 +1045,17 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       state.fetchStat.ok += got;
       state.fetchStat.fail += (out.length - got);
       if (filled > 0) state.fetchStat.fallback += filled;
+    }
+
+    // 记录失败项（供「仅重试失败项」入口）
+    if (!state.aborted) {
+      for (let i = 0; i < tokens.length; i++) {
+        if (!out[i]) {
+          const k = q + '|' + fieldId + '|' + recordId + '|' + i;
+          state.failPairs.add(k);
+          state.failRows.add(recordId);
+        }
+      }
     }
 
     if (!out.some(Boolean)) log('  该单元格原图与缩略图均不可取', 'err');
@@ -1018,7 +1098,9 @@ function buildColumnPlan(fieldIds) {
   return plan;
 }
 
-async function exportExcel() {
+async function exportExcel(options) {
+  options = options || {};
+  if (state.exporting) { log('已有导出任务进行中，已忽略重复点击。', 'warn'); return; }
   if (!state.loaded || !state.records.length) {
     log('请先「加载数据」。', 'warn');
     return;
@@ -1026,28 +1108,37 @@ async function exportExcel() {
   const ExcelJS = window.ExcelJS;
   if (!ExcelJS) { log('ExcelJS 不可用，无法导出。', 'err'); return; }
 
-  // 大表预估确认（交互4）
+  // 立即禁用导出/加载按钮，防止重复触发（交互：导出中禁用按钮防重复点击）
+  state.exporting = true;
+  $('#btnExport').disabled = true;
+  $('#btnExportZip').disabled = true;
+  $('#btnLoad').disabled = true;
+
+  // 大表预估确认（交互4）——重试时跳过
   const est = estimateExport();
-  if (est.tooLarge) {
+  if (est.tooLarge && !options.skipConfirm) {
     const ok = await showConfirm('本次导出约 ' + est.rows + ' 行、' + est.imgs + ' 张图片，文件可能较大且耗时较久。确定继续吗？', { okText: '继续导出', cancelText: '取消' });
-    if (!ok) { log('已取消导出（大表确认）。', 'warn'); return; }
+    if (!ok) { log('已取消导出（大表确认）。', 'warn'); return finishExportUI(); }
   }
-  // 导出后标记副作用确认（交互1）
-  if (!(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return; }
+  // 导出后标记副作用确认（交互1）——重试时跳过
+  if (!options.skipConfirm && !(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return finishExportUI(); }
 
   try {
     const fieldIds = getSelectedFieldIds();
-    if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return; }
+    if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return finishExportUI(); }
     const plan = buildColumnPlan(fieldIds);
     const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
     state.imgMode = ($('#imgMode').value || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
-    state.imgQuality = ($('#imgQuality').value || 'thumb'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgQuality = ($('#imgQuality').value || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
     state.aborted = false; // 功能5
+    state.lastExport = 'excel';
+    state.retryMode = !!options.skipConfirm;
+    state.fetchBytes = 0;
+    state.failPairs = new Set();
+    state.failRows = new Set();
 
-    $('#btnExport').disabled = true;
-    $('#btnLoad').disabled = true;
     showCancel(); showProgress(); setProgress(0);
     log('开始生成 Excel…');
 
@@ -1126,13 +1217,13 @@ async function exportExcel() {
       const imgData = attachFields.length
         ? await fetchImagesForRecords(chunk, attachFields, (d) => {
             setProgress(Math.round((processed + d) / total * 70));
-            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback);
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
       for (let k = 0; k < chunk.length; k++) writeRow(start + k, chunk[k], imgData[k] || {});
       processed += chunk.length;
       setProgress(70 + Math.round(processed / total * 30));
-      setProgressCount(processed + ' / ' + total + ' 行写入');
+      setProgressCount(processed + ' / ' + total + ' 行写入' + (state.fetchBytes ? ' · 已取图 ' + humanSize(state.fetchBytes) : ''));
       if (processed % 200 === 0) log('  写入第 ' + processed + ' / ' + total + ' 行');
       if (state.aborted) break;
     }
@@ -1152,15 +1243,18 @@ async function exportExcel() {
     } else {
       imgTip = '；图片以浮动方式贴入单元格（全版本可见）；旧版 Excel 复制单元格不会带走图片（Excel 原生限制）。';
     }
-    log('导出完成：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + imgTip + '）', 'ok');
+    const fileSize = buf.byteLength;
+    log('导出完成：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + imgTip + '）', 'ok');
     if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
       log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
     }
-    showToast('Excel 导出完成', name + '（' + total + ' 行 · 图片 原图' + state.stat.orig + '/缩略图' + state.stat.thumb + '）');
-    try {
-      await markExported(recs); // 功能4：只标记本次导出的有效行
-    } catch (e) {
-      log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+    showToast('Excel 导出完成', name + '（' + total + ' 行 · ' + humanSize(fileSize) + ' · 图片 原图' + state.stat.orig + '/缩略图' + state.stat.thumb + '）');
+    if (!state.retryMode) {
+      try {
+        await markExported(recs); // 功能4：只标记本次导出的有效行
+      } catch (e) {
+        log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+      }
     }
     setProgress(100);
   } catch (e) {
@@ -1256,7 +1350,9 @@ function renderNamingOptions() {
 }
 
 // ---------- 导出图片 ZIP（按文字列命名）----------
-async function exportZip() {
+async function exportZip(options) {
+  options = options || {};
+  if (state.exporting) { log('已有导出任务进行中，已忽略重复点击。', 'warn'); return; }
   if (!state.loaded || !state.records.length) {
     log('请先「加载数据」。', 'warn');
     return;
@@ -1264,29 +1360,38 @@ async function exportZip() {
   const JSZip = window.JSZip;
   if (!JSZip) { log('JSZip 不可用，无法导出 ZIP。', 'err'); return; }
 
-  // 大表预估确认（交互4）
+  // 立即禁用导出/加载按钮，防止重复触发（交互：导出中禁用按钮防重复点击）
+  state.exporting = true;
+  $('#btnExport').disabled = true;
+  $('#btnExportZip').disabled = true;
+  $('#btnLoad').disabled = true;
+
+  // 大表预估确认（交互4）——重试时跳过
   const est = estimateExport();
-  if (est.tooLarge) {
+  if (est.tooLarge && !options.skipConfirm) {
     const ok = await showConfirm('本次导出约 ' + est.rows + ' 行、' + est.imgs + ' 张图片，文件可能较大且耗时较久。确定继续吗？', { okText: '继续导出', cancelText: '取消' });
-    if (!ok) { log('已取消导出（大表确认）。', 'warn'); return; }
+    if (!ok) { log('已取消导出（大表确认）。', 'warn'); return finishExportUI(); }
   }
-  // 导出后标记副作用确认（交互1）
-  if (!(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return; }
+  // 导出后标记副作用确认（交互1）——重试时跳过
+  if (!options.skipConfirm && !(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return finishExportUI(); }
 
   try {
     const fieldIds = getSelectedFieldIds();
     let attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
     if (!attachFields.length) attachFields = state.fields.filter((f) => f.isAttachment);
-    if (!attachFields.length) { log('没有可用的图片字段。', 'warn'); return; }
+    if (!attachFields.length) { log('没有可用的图片字段。', 'warn'); return finishExportUI(); }
 
     const namingId = $('#namingField').value;
     state.stat = { orig: 0, thumb: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0 }; // 交互3
     state.aborted = false; // 功能5
+    state.lastExport = 'zip';
+    state.retryMode = !!options.skipConfirm;
+    state.fetchBytes = 0;
+    state.failPairs = new Set();
+    state.failRows = new Set();
+    state.imgQuality = ($('#imgQuality').value || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
 
-    $('#btnExport').disabled = true;
-    $('#btnExportZip').disabled = true;
-    $('#btnLoad').disabled = true;
     showCancel(); showProgress(); setProgress(0);
     log('开始生成图片 ZIP…');
 
@@ -1319,7 +1424,7 @@ async function exportZip() {
       const imgData = attachFields.length
         ? await fetchImagesForRecords(chunk, attachFields.map((f) => f.id), (d) => {
             setProgress(Math.round((processed + d) / total * 80));
-            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback);
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
       for (let k = 0; k < chunk.length; k++) {
@@ -1339,7 +1444,7 @@ async function exportZip() {
       }
       processed += chunk.length;
       setProgress(80 + Math.round(processed / total * 20));
-      setProgressCount(processed + ' / ' + total + ' 行 · ' + fileCount + ' 张图');
+      setProgressCount(processed + ' / ' + total + ' 行 · ' + fileCount + ' 张图' + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
       if (state.aborted) break;
     }
 
@@ -1351,15 +1456,18 @@ async function exportZip() {
     const name = makeZipName();
     triggerDownload(blob, name);
     setProgress(100);
-    log('导出完成：' + name + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + '）', 'ok');
+    const fileSize = blob.size;
+    log('导出完成：' + name + '（' + fileCount + ' 张图片，原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + '）', 'ok');
     if (state.stat.orig === 0 && state.stat.thumb > 0) {
       log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
     }
-    showToast('ZIP 导出完成', name + '（' + fileCount + ' 张图片）');
-    try {
-      await markExported(recs); // 功能4：只标记本次导出的有效行
-    } catch (e) {
-      log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+    showToast('ZIP 导出完成', name + '（' + fileCount + ' 张图片 · ' + humanSize(fileSize) + '）');
+    if (!state.retryMode) {
+      try {
+        await markExported(recs); // 功能4：只标记本次导出的有效行
+      } catch (e) {
+        log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
+      }
     }
     setProgress(100);
   } catch (e) {
@@ -1370,8 +1478,143 @@ async function exportZip() {
   }
 }
 
+// ---------- 导出方案（多套命名预设）----------
+const SCHEME_KEY = 'fie_schemes';
+function getSchemes() {
+  const s = LS.get(SCHEME_KEY, { default: null, items: {} });
+  if (!s || typeof s !== 'object' || !s.items) return { default: null, items: {} };
+  if (!s.items) s.items = {};
+  return s;
+}
+function setSchemes(s) { LS.set(SCHEME_KEY, s); }
+function readSettingsFromUI() {
+  return {
+    imgQuality: $('#imgQuality').value,
+    imgMode: $('#imgMode').value,
+    imgWidth: $('#imgWidth').value,
+    concurrency: $('#concurrency').value,
+    onlyUnmarked: $('#onlyUnmarked').checked,
+    ignoreView: $('#ignoreView').checked,
+    namingField: $('#namingField').value,
+    markField: $('#markField').value,
+  };
+}
+function applySettingsToUI(s) {
+  if (!s) return;
+  if (s.imgQuality) $('#imgQuality').value = s.imgQuality;
+  if (s.imgMode) $('#imgMode').value = s.imgMode;
+  if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
+  if (s.concurrency) $('#concurrency').value = s.concurrency;
+  if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
+  if (typeof s.ignoreView === 'boolean') $('#ignoreView').checked = s.ignoreView;
+  if (s.namingField) $('#namingField').value = s.namingField;
+  if (s.markField) $('#markField').value = s.markField;
+  state.onlyUnmarked = !!s.onlyUnmarked;
+}
+function renderSchemeList(selected) {
+  const sel = $('#schemeSelect');
+  if (!sel) return;
+  const schemes = getSchemes();
+  sel.innerHTML = '';
+  const names = Object.keys(schemes.items || {});
+  if (!names.length) {
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = '（暂无方案，可在上方保存）';
+    sel.appendChild(o);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const n of names) {
+    const o = document.createElement('option');
+    o.value = n;
+    o.textContent = n + (schemes.default === n ? '（默认）' : '');
+    sel.appendChild(o);
+  }
+  if (selected && schemes.items[selected]) sel.value = selected;
+}
+function saveCurrentScheme() {
+  const name = ($('#schemeName').value || '').trim();
+  if (!name) { showToast('请先输入方案名', '方案名不能为空'); return; }
+  const schemes = getSchemes();
+  const cur = schemes.items[name] || { settings: {}, fields: {} };
+  cur.settings = readSettingsFromUI();
+  cur.fields = Object.assign({}, cur.fields);
+  cur.fields[state.tableId] = getSelectedFieldIds();
+  schemes.items[name] = cur;
+  setSchemes(schemes);
+  renderSchemeList(name);
+  log('已保存导出方案：' + name + '（' + cur.fields[state.tableId].length + ' 个字段）', 'ok');
+  showToast('方案已保存', name);
+}
+function applyScheme(name) {
+  const schemes = getSchemes();
+  const item = schemes.items[name];
+  if (!item) return;
+  applySettingsToUI(item.settings);
+  saveSettings();
+  if (item.fields && item.fields[state.tableId]) {
+    LS.set(selKey(state.tableId), item.fields[state.tableId]);
+    applySelection();
+  }
+  log('已应用导出方案：' + name, 'ok');
+  showToast('方案已应用', name);
+}
+function deleteScheme(name) {
+  if (!name) return;
+  const schemes = getSchemes();
+  if (!schemes.items[name]) return;
+  delete schemes.items[name];
+  if (schemes.default === name) schemes.default = null;
+  setSchemes(schemes);
+  renderSchemeList();
+  log('已删除导出方案：' + name);
+}
+function setDefaultScheme(name) {
+  if (!name) return;
+  const schemes = getSchemes();
+  if (!schemes.items[name]) return;
+  schemes.default = name;
+  setSchemes(schemes);
+  renderSchemeList(name);
+  log('已设默认导出方案：' + name, 'ok');
+  showToast('已设默认方案', name);
+}
+// 加载数据时自动应用默认方案（若存在）
+function applyDefaultScheme() {
+  const schemes = getSchemes();
+  if (!schemes.default || !schemes.items[schemes.default]) return;
+  const item = schemes.items[schemes.default];
+  applySettingsToUI(item.settings);
+  saveSettings();
+  if (item.fields && item.fields[state.tableId]) {
+    LS.set(selKey(state.tableId), item.fields[state.tableId]);
+    applySelection();
+  }
+}
+// 「仅重试失败项」入口：复用会话缓存，仅重取失败的图片，跳过确认弹窗
+function retryFailed() {
+  if (state.exporting) { log('导出进行中，请稍候。', 'warn'); return; }
+  if (!state.failPairs || state.failPairs.size === 0) { showToast('没有失败项', '当前没有需要重试的失败项'); return; }
+  log('开始重试失败项（复用已取图，仅重取失败图片）…', 'ok');
+  if (state.lastExport === 'zip') exportZip({ skipConfirm: true });
+  else exportExcel({ skipConfirm: true });
+}
+// 根据失败项刷新「仅重试失败项」按钮
+function updateRetryButton() {
+  const b = $('#btnRetryFailed');
+  if (!b) return;
+  const n = state.failPairs ? state.failPairs.size : 0;
+  if (n > 0) {
+    b.classList.remove('hidden');
+    b.textContent = '仅重试失败项（' + n + '）';
+  } else {
+    b.classList.add('hidden');
+  }
+}
+
 // ---------- 设置弹窗 / 日志折叠 ----------
-function openSettings() { $('#settingsModal').hidden = false; }
+function openSettings() { $('#settingsModal').hidden = false; renderSchemeList(); }
 function closeSettings() { $('#settingsModal').hidden = true; }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -1407,6 +1650,13 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnCloseSettings').addEventListener('click', closeSettings);
   $('#settingsModal').addEventListener('click', (e) => { if (e.target === $('#settingsModal')) closeSettings(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+  // 导出方案（多套命名预设）
+  $('#btnSchemeSave').addEventListener('click', saveCurrentScheme);
+  $('#btnSchemeApply').addEventListener('click', () => { const n = $('#schemeSelect').value; if (n) applyScheme(n); else showToast('请选择方案', '先在上方下拉选择要应用的方案'); });
+  $('#btnSchemeDelete').addEventListener('click', () => { const n = $('#schemeSelect').value; if (n) deleteScheme(n); });
+  $('#btnSchemeDefault').addEventListener('click', () => { const n = $('#schemeSelect').value; if (n) setDefaultScheme(n); else showToast('请选择方案', '先在下拉选择要设为默认的方案'); });
+  // 仅重试失败项
+  $('#btnRetryFailed').addEventListener('click', retryFailed);
   // 日志折叠
   $('#logToggle').addEventListener('click', () => {
     const panel = $('#logPanel');
