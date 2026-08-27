@@ -80,8 +80,8 @@
       <div class="form-row inline-row">
         <label for="imgQuality">图片质量</label>
         <select id="imgQuality" class="mini-select">
-          <option value="thumb">缩略图（最快·推荐）</option>
-          <option value="orig">高清原图（直连飞书）</option>
+          <option value="orig" selected>高清原图（直连飞书·推荐）</option>
+          <option value="thumb">缩略图（最快·最稳·体积小）</option>
         </select>
       </div>
       <div class="form-row inline-row">
@@ -95,7 +95,7 @@
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
       </div>
-      <p class="muted xs">质量：缩略图由飞书直接返回、不逐个联网，最快最稳；高清原图直连飞书附件（无需代理），但受 CORS 限制可能回退缩略图。嵌入：贴入图所有版本可见；内嵌额外写 IMAGE 公式，Excel 365/新版 WPS 下复制单元格可带走图片。</p>
+      <p class="muted xs">质量：高清原图直连飞书附件（无需代理），保留原始分辨率，推荐优先；若受 CORS 限制取不到像素则该格留空。缩略图由飞书直接返回、不逐个联网，最快最稳、体积最小。嵌入：贴入图所有版本可见；内嵌额外写 IMAGE 公式，Excel 365/新版 WPS 下复制单元格可带走图片。</p>
     </section>
 
     <section class="card card-collapsible">
@@ -184,6 +184,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260827c"></script>
+  <script type="module" src="./app.js?v=20260827d"></script>
 </body>
 </html>

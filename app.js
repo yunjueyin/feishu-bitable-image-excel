@@ -37,7 +37,7 @@ const state = {
   fetchStat: { ok: 0, fail: 0, fallback: 0 }, // 取图实时计数（交互3）
   aborted: false, // 取消标志（功能5）
   onlyUnmarked: false, // 仅导出未标记行（功能4）
-  imgQuality: 'thumb', // thumb=缩略图(最快·推荐) / orig=高清原图(本地直连飞书)
+  imgQuality: 'orig', // orig=高清原图(本地直连飞书·默认推荐) / thumb=缩略图(最快·最稳)
 };
 
 // ---------- 工具 ----------
