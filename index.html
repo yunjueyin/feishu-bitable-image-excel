@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260827f" />
+  <link rel="stylesheet" href="./styles.css?v=20260827h" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -81,7 +81,7 @@
 
     <section class="card">
       <div class="card-head">
-        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-table"/></svg>数据表</span>
+        <span class="card-title"><span class="ico-tile"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-table"/></svg></span>数据表</span>
         <span id="count" class="tag"></span>
       </div>
       <select id="tableSelect" class="select hidden"></select>
@@ -90,7 +90,7 @@
 
     <section class="card card-collapsible">
       <div class="card-head clickable" id="fieldToggle" role="button" tabindex="0" aria-expanded="false">
-        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image"/></svg>导出字段</span>
+        <span class="card-title"><span class="ico-tile"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image"/></svg></span>导出字段</span>
         <span class="field-summary" id="fieldSummary">未选择</span>
         <span class="chev collapsed"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
       </div>
@@ -109,7 +109,7 @@
     </section>
 
     <section class="card">
-      <div class="card-head"><span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sliders"/></svg>图片设置</span></div>
+      <div class="card-head"><span class="card-title"><span class="ico-tile"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sliders"/></svg></span>图片设置</span></div>
       <div class="form-row inline-row">
         <label for="imgQuality">图片质量</label>
         <div class="seg" id="imgQuality" role="radiogroup" aria-label="图片质量">
@@ -133,7 +133,7 @@
 
     <section class="card card-collapsible">
       <div class="card-head clickable" id="previewToggle" role="button" tabindex="0" aria-expanded="false">
-        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-eye"/></svg>导出前预览</span>
+        <span class="card-title"><span class="ico-tile"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-eye"/></svg></span>导出前预览</span>
         <span class="field-summary" id="previewSummary">加载数据后显示预估</span>
         <span class="chev collapsed"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
       </div>
@@ -147,16 +147,16 @@
 
     <section class="actions">
       <p id="dataEmptyHint" class="empty-hint warn-hint hidden"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-inbox"/></svg><span>当前表（或当前筛选）没有可导出的数据行。请检查筛选条件或切换数据表。</span></p>
-      <button id="btnLoad" class="btn btn-primary" type="button" disabled><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg>加载数据</button>
-      <button id="btnExport" class="btn btn-primary" type="button" disabled><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-download"/></svg>导出 Excel（带图）</button>
-      <button id="btnExportZip" class="btn btn-soft" type="button" disabled><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-archive"/></svg>导出图片 ZIP</button>
-      <button id="btnRetryFailed" class="btn btn-soft hidden" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg>仅重试失败项</button>
+      <button id="btnLoad" class="btn btn-primary" type="button" disabled><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg></span>加载数据</button>
+      <button id="btnExport" class="btn btn-primary" type="button" disabled><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-download"/></svg></span>导出 Excel（带图）</button>
+      <button id="btnExportZip" class="btn btn-soft" type="button" disabled><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-archive"/></svg></span>导出图片 ZIP</button>
+      <button id="btnRetryFailed" class="btn btn-soft hidden" type="button"><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg></span>仅重试失败项</button>
       <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
     <section class="card log-card">
       <div class="card-head clickable" id="logToggle">
-        <span class="card-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-list"/></svg>运行日志</span>
+        <span class="card-title"><span class="ico-tile"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-list"/></svg></span>运行日志</span>
         <span class="chev"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
       </div>
       <div id="logPanel" class="log-panel collapsed">
@@ -169,7 +169,7 @@
   <div class="modal-mask" id="settingsModal" hidden>
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head">
-        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-settings"/></svg>
+        <span class="ico-tile"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-settings"/></svg></span>
         <span>更多设置</span>
         <button class="icon-btn" id="btnCloseSettings" type="button" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
       </div>
@@ -217,7 +217,7 @@
   <!-- 通用确认弹窗（标记副作用确认 / 大表确认） -->
   <div class="modal-mask" id="confirmModal" hidden>
     <div class="modal modal-sm" role="dialog" aria-modal="true">
-      <div class="modal-head"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-alert"/></svg><span id="confirmTitle">确认</span></div>
+      <div class="modal-head"><span class="ico-tile t-amber"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-alert"/></svg></span><span id="confirmTitle">确认</span></div>
       <div class="modal-body"><p id="confirmMsg" class="muted"></p></div>
       <div class="modal-foot">
         <button class="btn btn-soft" id="confirmCancel">取消</button>
@@ -235,6 +235,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260827g"></script>
+  <script type="module" src="./app.js?v=20260827h"></script>
 </body>
 </html>

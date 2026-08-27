@@ -504,13 +504,15 @@ function renderFieldList() {
   const attachments = state.fields.filter((f) => f.isAttachment);
   const others = state.fields.filter((f) => !f.isAttachment);
 
-  const renderGroup = (title, list, defaultChecked) => {
+  const renderGroup = (title, list, defaultChecked, kind) => {
     if (!list.length) return;
     const group = document.createElement('div');
     group.className = 'field-group';
     const head = document.createElement('div');
     head.className = 'field-group-title';
-    head.textContent = title;
+    const tileCls = kind === 'image' ? 'ico-tile' : 'ico-tile t-violet';
+    const iconId = kind === 'image' ? 'icon-image' : 'icon-text';
+    head.innerHTML = `<span class="${tileCls}"><svg class="ico" viewBox="0 0 24 24"><use href="#${iconId}"/></svg></span><span class="fg-title">${title}</span>`;
     group.appendChild(head);
     for (const f of list) {
       const row = document.createElement('label');
@@ -527,7 +529,7 @@ function renderFieldList() {
       if (f.isAttachment) {
         const tag = document.createElement('span');
         tag.className = 'ftag';
-        tag.textContent = '图片';
+        tag.innerHTML = '<svg class="ico" viewBox="0 0 24 24"><use href="#icon-image"/></svg>图片';
         row.appendChild(tag);
       }
       group.appendChild(row);
@@ -535,8 +537,8 @@ function renderFieldList() {
     box.appendChild(group);
   };
 
-  renderGroup('图片列（嵌入单元格）', attachments, true);
-  renderGroup('文字列', others, true);
+  renderGroup('图片列（嵌入单元格）', attachments, true, 'image');
+  renderGroup('文字列', others, true, 'text');
   updateFieldSummary();
 }
 

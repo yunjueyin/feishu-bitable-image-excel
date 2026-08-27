@@ -26,6 +26,14 @@
   --err: #f54a45;
   --warn: #e8840c;
 
+  /* 语义 tint 柔色块（图标底）：背景 + 前景主色 */
+  --tint-blue-bg: #eef3ff;   --tint-blue-fg: #3370ff;
+  --tint-violet-bg: #f1ecff; --tint-violet-fg: #6d3bff;
+  --tint-cyan-bg: #e6f7fb;   --tint-cyan-fg: #0a9bb5;
+  --tint-green-bg: #e7f7ee;  --tint-green-fg: #1f9d4d;
+  --tint-amber-bg: #fdf0e0;  --tint-amber-fg: #e8840c;
+  --tint-red-bg: #fdeaea;    --tint-red-fg: #f54a45;
+
   /* 节奏：统一圆角、间距、缓动 */
   --radius: 18px;
   --radius-sm: 12px;
@@ -55,6 +63,14 @@
   --ok: #3fc46f;
   --err: #ff6a64;
   --warn: #ffa53d;
+
+  /* 语义 tint（暗色：背景调暗、前景提亮） */
+  --tint-blue-bg: rgba(51, 112, 255, 0.18);   --tint-blue-fg: #7aa2ff;
+  --tint-violet-bg: rgba(109, 59, 255, 0.20); --tint-violet-fg: #b79bff;
+  --tint-cyan-bg: rgba(10, 155, 181, 0.20);   --tint-cyan-fg: #5fd0e6;
+  --tint-green-bg: rgba(31, 157, 77, 0.20);   --tint-green-fg: #5fd98a;
+  --tint-amber-bg: rgba(232, 132, 12, 0.20);  --tint-amber-fg: #ffb866;
+  --tint-red-bg: rgba(245, 74, 69, 0.20);     --tint-red-fg: #ff8a86;
 
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.3);
   --shadow-pop: 0 24px 70px rgba(0, 0, 0, 0.55), 0 8px 22px rgba(0, 0, 0, 0.4);
@@ -121,6 +137,32 @@ body {
   display: block;
 }
 .ico.fill { fill: currentColor; stroke: none; }
+
+/* ---------- 柔色圆角图标块（tint tile） ---------- */
+.ico-tile {
+  width: 30px; height: 30px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: var(--tint-blue-bg);
+  color: var(--tint-blue-fg);
+}
+.ico-tile .ico { width: 16px; height: 16px; }
+.ico-tile.t-violet { background: var(--tint-violet-bg); color: var(--tint-violet-fg); }
+.ico-tile.t-cyan   { background: var(--tint-cyan-bg);   color: var(--tint-cyan-fg); }
+.ico-tile.t-green  { background: var(--tint-green-bg);  color: var(--tint-green-fg); }
+.ico-tile.t-amber  { background: var(--tint-amber-bg);  color: var(--tint-amber-fg); }
+.ico-tile.t-red    { background: var(--tint-red-bg);    color: var(--tint-red-fg); }
+
+/* ---------- 按钮内图标块 ---------- */
+.btn-ico {
+  width: 24px; height: 24px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.btn-ico .ico { width: 14px; height: 14px; }
+.btn-soft .btn-ico { background: rgba(20, 24, 40, 0.06); color: var(--text-soft); }
 
 /* ---------- 头部 ---------- */
 .app-header {
@@ -225,7 +267,7 @@ body {
   display: inline-flex; align-items: center; gap: 8px;
   font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -0.1px;
 }
-.card-title .ico { width: 16px; height: 16px; color: var(--blue); }
+.card-title .ico-tile { flex: none; }
 .tag {
   font-size: 12px; color: var(--text-soft);
   background: var(--bg-2); border-radius: 999px;
@@ -294,17 +336,15 @@ body {
 .field-group { margin-bottom: 4px; }
 .field-group:last-child { margin-bottom: 0; }
 .field-group-title {
-  display: flex; align-items: center; gap: 7px;
+  display: flex; align-items: center; gap: 8px;
   font-size: 11px; font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-soft);
   padding: 8px 10px 4px;
   letter-spacing: 0.8px;
 }
-.field-group-title .ico { width: 13px; height: 13px; color: var(--text-muted); }
-.field-group-title::before {
-  content: ''; width: 3px; height: 11px;
-  border-radius: 2px; background: var(--blue); opacity: 0.7; flex: none;
-}
+.field-group-title .fg-title { min-width: 0; }
+.field-group-title .ico-tile { width: 22px; height: 22px; border-radius: 7px; }
+.field-group-title .ico-tile .ico { width: 13px; height: 13px; }
 .field-item {
   display: flex; align-items: center; gap: 11px;
   padding: 10px 12px;
