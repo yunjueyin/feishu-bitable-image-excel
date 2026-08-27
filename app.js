@@ -160,7 +160,6 @@ function saveSettings() {
     imgQuality: getSeg('imgQuality'),
     imgMode: getSeg('imgMode'),
     imgWidth: $('#imgWidth').value,
-    concurrency: $('#concurrency').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
     namingField: $('#namingField').value,
     markField: $('#markField').value,
@@ -171,7 +170,6 @@ function applySettings() {
   if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
   if (s.imgMode) setSeg('imgMode', s.imgMode);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
-  if (s.concurrency) $('#concurrency').value = s.concurrency;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (s.namingField) $('#namingField').value = s.namingField;
   if (s.markField) $('#markField').value = s.markField;
@@ -213,7 +211,7 @@ async function fetchImagesForRecords(records, attachFieldIds, onProgress) {
   const out = new Array(records.length);
   let cursor = 0;
   let done = 0;
-  const conc = Math.max(1, Math.min(12, parseInt($('#concurrency').value, 10) || 2));
+  const conc = 3; // 实际在途 SDK 调用由 thumbLimit/attachLimit(各3) 硬限；这里仅控制记录循环并发，固定为 3
   async function worker() {
     while (!state.aborted && cursor < records.length) {
       const i = cursor++;
@@ -481,13 +479,30 @@ async function init() {
 
 async function loadFields() {
   const metas = await state.table.getFieldMetaList();
-  state.fields = metas.map((m) => ({
+  let list = metas.map((m) => ({
     id: m.id,
     name: m.name,
     type: m.type,
     isPrimary: !!m.isPrimary,
     isAttachment: m.type === FIELD_TYPE_ATTACHMENT,
   }));
+  // 导出列序对齐：按当前视图（即界面实际列序）重排，避免导出顺序与表格不一致
+  try {
+    const view = await state.table.getActiveView();
+    const vfields = view && view.fields;
+    if (Array.isArray(vfields) && vfields.length) {
+      const order = vfields
+        .map((x) => (typeof x === 'string' ? x : (x && (x.fieldId || x.id))))
+        .filter(Boolean);
+      if (order.length) {
+        const pos = new Map();
+        order.forEach((id, i) => { if (!pos.has(id)) pos.set(id, i); });
+        list.sort((a, b) =>
+          ((pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9)));
+      }
+    }
+  } catch (e) { /* 取不到视图列序则保持原顺序 */ }
+  state.fields = list;
   renderFieldList();
   applySelection(); // 恢复本表上次勾选（功能8）
   renderMarkOptions();
@@ -1556,7 +1571,6 @@ function readSettingsFromUI() {
     imgQuality: getSeg('imgQuality'),
     imgMode: getSeg('imgMode'),
     imgWidth: $('#imgWidth').value,
-    concurrency: $('#concurrency').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
     ignoreView: $('#ignoreView').checked,
     namingField: $('#namingField').value,
@@ -1568,7 +1582,6 @@ function applySettingsToUI(s) {
   if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
   if (s.imgMode) setSeg('imgMode', s.imgMode);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
-  if (s.concurrency) $('#concurrency').value = s.concurrency;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (typeof s.ignoreView === 'boolean') $('#ignoreView').checked = s.ignoreView;
   if (s.namingField) $('#namingField').value = s.namingField;
@@ -1706,7 +1719,7 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
   // 常用设置变化即记忆（功能8）
-  ['imgWidth', 'concurrency', 'onlyUnmarked', 'namingField', 'markField'].forEach((id) => {
+  ['imgWidth', 'onlyUnmarked', 'namingField', 'markField'].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', saveSettings);
   });
