@@ -1549,12 +1549,15 @@ async function markExportedRecords(fieldId, records) {
   log('  已标记本批「已导出」：' + okCount + ' / ' + n + ' 行', okCount === n ? 'ok' : 'warn');
 }
 
-// ---------- 全局打勾并发池（边加载边打勾，不阻塞主导出，受控并发）----------
+// ---------- 全局打勾并发池（边加载边打勾，不阻塞主导出；优先批量写提速）----------
 let _markQueue = [];
 let _markActive = 0;
 let _markFieldId = null;
 let _markWaiters = [];
-const MARK_CONC = 12; // 打勾是轻量布尔写入，setCellValue 不走取图共享限流(独立API)，提至12路进一步提速；限流由 withRetry 兜底
+let _markBatchSupported = null; // null=未定, true=用 setRecords 批量, false=降级单格
+let _markProbing = false;
+const MARK_CONC = 12; // 打勾并发 worker 数；setCellValue 不走取图共享限流(独立API)
+const MARK_BATCH = 100; // 批量写每批行数（setRecords 上限5000，底层 batch_update 限流 50/s，100 安全）
 
 function enqueueMark(fieldId, records) {
   if (!fieldId || !records || !records.length) return;
@@ -1572,12 +1575,47 @@ function _pumpMark() {
 async function _markWorker() {
   while (_markQueue.length) {
     if (state.aborted || state.confirmedCancel) break; // 取消即停止打勾
-    const rec = _markQueue.shift();
-    try {
-      await withRetry(() => state.table.setCellValue(_markFieldId, rec.recordId, true),
-        { retries: 3, timeoutMs: 6000, label: 'setCellValue(' + rec.recordId + ')', baseDelay: 400 });
-    } catch (e) {
-      log('  标记失败（' + (rec.recordId || '') + '）：' + e.message, 'warn');
+    // 首次运行确定写模式：优先批量写 setRecords（一次请求写多行），失败则降级单格 setCellValue
+    if (_markBatchSupported === null) {
+      if (_markProbing) { await sleep(60); continue; } // 让正在探测的 worker 先定模式
+      _markProbing = true;
+      const probeBatch = [];
+      while (probeBatch.length < MARK_BATCH && _markQueue.length) probeBatch.push(_markQueue.shift());
+      if (!probeBatch.length) { _markProbing = false; break; }
+      try {
+        await withRetry(() => state.table.setRecords(probeBatch.map((r) => ({ recordId: r.recordId, fields: { [_markFieldId]: true } }))),
+          { retries: 2, timeoutMs: 8000, label: 'setRecords(' + probeBatch.length + ')', baseDelay: 400 });
+        _markBatchSupported = true;
+        log('  打勾模式：批量写 setRecords（每批 ' + MARK_BATCH + ' 行，请求数大幅减少）', 'ok');
+      } catch (e) {
+        _markBatchSupported = false;
+        log('  setRecords 不可用，降级单格写：' + e.message, 'warn');
+        for (const r of probeBatch) {
+          try { await withRetry(() => state.table.setCellValue(_markFieldId, r.recordId, true), { retries: 3, timeoutMs: 6000, baseDelay: 400 }); }
+          catch (e2) { log('  降级单格失败（' + (r.recordId || '') + '）：' + e2.message, 'warn'); }
+        }
+      }
+      _markProbing = false;
+      continue;
+    }
+    if (_markBatchSupported) {
+      const batch = [];
+      while (batch.length < MARK_BATCH && _markQueue.length) batch.push(_markQueue.shift());
+      if (!batch.length) break;
+      try {
+        await withRetry(() => state.table.setRecords(batch.map((r) => ({ recordId: r.recordId, fields: { [_markFieldId]: true } }))),
+          { retries: 3, timeoutMs: 8000, label: 'setRecords(' + batch.length + ')', baseDelay: 400 });
+      } catch (e) {
+        log('  批量标记失败（' + batch.length + ' 行）：' + e.message, 'warn');
+      }
+    } else {
+      const rec = _markQueue.shift();
+      try {
+        await withRetry(() => state.table.setCellValue(_markFieldId, rec.recordId, true),
+          { retries: 3, timeoutMs: 6000, label: 'setCellValue(' + rec.recordId + ')', baseDelay: 400 });
+      } catch (e) {
+        log('  标记失败（' + (rec.recordId || '') + '）：' + e.message, 'warn');
+      }
     }
   }
 }
@@ -1595,6 +1633,7 @@ function drainMarkQueue() {
 }
 function resetMarkQueue() {
   _markQueue = []; _markActive = 0; _markFieldId = null; _markWaiters = [];
+  _markBatchSupported = null; _markProbing = false;
 }
 
 
