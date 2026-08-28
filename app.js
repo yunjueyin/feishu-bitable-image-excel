@@ -1410,18 +1410,23 @@ async function exportExcel(options) {
             setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
-      const chunkWritten = []; // 本块实际写出 Excel 的行（排除仅图片列全空行）
+      const chunkWritten = []; // 本块实际写出 Excel 且命中打勾的行（仅成功导出图片的行）
       for (let k = 0; k < chunk.length; k++) {
         const cache = imgData[k] || {};
-        // 仅选图片列且该行所有图片列均空 → 跳过（无内容可导出，且 Excel 无其他列数据）
+        // 仅选图片列且该行所有图片列均空（空单元格/视频）→ 整行无内容可写，跳过
         const allImgEmpty = attachFields.length > 0 && attachFields.every((fid) => ((cache[fid] || []).length === 0));
         if (onlyImgCols && allImgEmpty) { skippedEmptyRows++; continue; }
         writeRow(outRow, chunk[k], cache);
         writtenRecs.push(chunk[k]);
-        chunkWritten.push(chunk[k]);
         outRow++;
+        // 打勾判定（功能4）：成功导出至少一张图片才标记「已导出」；纯文本导出（无图片列）整行视为已导出。
+        // 空单元格 / 视频单元格（未成功导出任何图片）一律不打勾。
+        const hasExportedImage = attachFields.length === 0
+          ? true
+          : attachFields.some((fid) => (cache[fid] || []).some((img) => img && img.base64));
+        if (hasExportedImage) chunkWritten.push(chunk[k]);
       }
-      // 流式逐块打勾：写完本块立即标记「已导出」（空/视频行不在 writtenRecs，不打勾）
+      // 流式逐块打勾：写完本块立即标记「已导出」（仅成功导出图片的行打勾；空/视频行不打勾）
       if (markFieldId && chunkWritten.length) {
         try { await markExportedRecords(markFieldId, chunkWritten); }
         catch (e) { log('  本批标记失败：' + (e && e.message ? e.message : e), 'warn'); }
