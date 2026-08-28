@@ -130,7 +130,7 @@ body {
 .app {
   max-width: 520px;
   margin: 0 auto;
-  padding: 28px 16px 60px;
+  padding: 22px 14px 48px;
 }
 
 /* ---------- 线性图标基底 ---------- */
@@ -186,7 +186,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .brand-logo {
@@ -245,11 +245,11 @@ body {
   gap: 8px;
   font-weight: 500;
   font-size: 14px;
-  padding: 7px 13px;
+  padding: 6px 11px;
   border-radius: 999px;
   background: var(--card);
   border: 1px solid var(--divider);
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   box-shadow: var(--shadow-card);
 }
 .status .dot {
@@ -266,8 +266,8 @@ body {
   background: var(--card);
   border: 1px solid var(--hairline);
   border-radius: var(--radius);
-  padding: 18px;
-  margin-bottom: 12px;
+  padding: 14px;
+  margin-bottom: 10px;
   box-shadow: var(--shadow-card);
   transition: background 0.3s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
@@ -276,7 +276,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .card-head.clickable { cursor: pointer; user-select: none; }
 .card-title {
@@ -294,9 +294,9 @@ body {
 /* 卡片内提示说明：做成舒展的浅蓝提示块，避免文字紧贴边缘 */
 .card > .muted.xs {
   background: var(--blue-soft);
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-radius: var(--radius-xs);
-  margin: 10px 0 0;
+  margin: 8px 0 0;
 }
 .chev {
   width: 18px; height: 18px; color: var(--text-muted);
@@ -413,15 +413,15 @@ body {
 }
 .card-head.clickable:hover { background: var(--bg-2); }
 .card-head.clickable:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.card-collapsible { padding-bottom: 12px; }
+.card-collapsible { padding-bottom: 10px; }
 .card-collapsible .card-head { margin-bottom: 0; }
-.card-collapsible .field-dropdown { padding-top: 6px; }
-.log-card .card-head.clickable { margin-bottom: 12px; }
+.card-collapsible .field-dropdown { padding-top: 4px; }
+.log-card .card-head.clickable { margin-bottom: 10px; }
 
 /* ---------- 表单控件 ---------- */
 .form-row {
   display: flex; flex-direction: column; gap: 8px;
-  padding: 12px 0;
+  padding: 10px 0;
   border-bottom: 1px solid var(--divider);
 }
 .form-row:last-child { border-bottom: none; }
@@ -516,19 +516,19 @@ body {
 .form-row.inline-row .mini-input { width: auto; flex: none; max-width: 62%; }
 
 /* ---------- 操作按钮 ---------- */
-.actions { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.actions { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .btn {
   border: none;
   border-radius: var(--radius-sm);
-  padding: 12px 18px;
-  font-size: 15px;
+  padding: 10px 16px;
+  font-size: 14px;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   transition: transform 0.08s var(--ease), background 0.18s var(--ease), opacity 0.18s var(--ease), box-shadow 0.18s var(--ease);
 }
-.btn .ico { width: 18px; height: 18px; }
+.btn .ico { width: 16px; height: 16px; }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.block { width: 100%; }
@@ -543,7 +543,7 @@ body {
 /* ---------- 进度条 ---------- */
 .progress-box {
   background: var(--card); border: 1px solid var(--hairline);
-  border-radius: 13px; padding: 10px 13px; margin-bottom: 12px;
+  border-radius: 13px; padding: 10px 13px; margin-bottom: 10px;
   box-shadow: var(--shadow-card);
 }
 .progress-box.hidden { display: none; }
@@ -723,7 +723,7 @@ body {
   .actions .btn { width: auto; flex: 1 1 0; min-width: 120px; }
 }
 @media (max-width: 559px) {
-  .app { padding: 18px 14px 44px; }
-  .card { padding: 16px 14px; }
+  .app { padding: 16px 12px 40px; }
+  .card { padding: 14px 12px; }
   .subtitle { display: none; }
 }
