@@ -123,8 +123,8 @@ function makeLimiter(max) {
     if (active < max) { active++; run(); } else { queue.push(run); }
   });
 }
-const thumbLimit = makeLimiter(3);   // 同时在途的缩略图请求 ≤ 3
-const attachLimit = makeLimiter(3);  // 同时在途的原图请求 ≤ 3
+const thumbLimit = makeLimiter(6);   // 同时在途的缩略图请求 ≤ 6（提速：飞书接口 6 路通常稳定）
+const attachLimit = makeLimiter(6);  // 同时在途的原图请求 ≤ 6
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -211,7 +211,7 @@ async function fetchImagesForRecords(records, attachFieldIds, onProgress) {
   const out = new Array(records.length);
   let cursor = 0;
   let done = 0;
-  const conc = 3; // 实际在途 SDK 调用由 thumbLimit/attachLimit(各3) 硬限；这里仅控制记录循环并发，固定为 3
+  const conc = 6; // 实际在途 SDK 调用由 thumbLimit/attachLimit(各6) 硬限；这里仅控制记录循环并发，固定为 6 以饱和信号量
   async function worker() {
     while (!state.aborted && cursor < records.length) {
       const i = cursor++;
