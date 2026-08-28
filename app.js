@@ -101,9 +101,30 @@ function isFrequencyLimit(e) {
   return /frequency limit|too many requests|99991400|\b429\b/i.test(s);
 }
 
-// 重试：普通失败短退避；若命中飞书频控（code 99991400 / 429），拉长退避并多给一次重试，
-// 避免「并发一高就被限流→直接取图失败」。
-async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDelay = 300 } = {}) {
+// 从飞书 SDK 的错误对象里尽量取出响应头 x-ogw-ratelimit-reset（秒）。
+// 飞书 SDK 不一定把这个头透传到 error，所以多路径兜底；都拿不到就返回 null（改走指数退避）。
+function extractRateLimitReset(e) {
+  if (!e) return null;
+  const tryHeaders = (h) => {
+    if (!h) return null;
+    const v = h['x-ogw-ratelimit-reset'] ?? h['X-OGW-RATELIMIT-RESET'] ?? (typeof h.get === 'function' ? h.get('x-ogw-ratelimit-reset') : undefined);
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  let r = tryHeaders(e.response && e.response.headers)
+       ?? tryHeaders(e.headers)
+       ?? tryHeaders(e.res && e.res.headers)
+       ?? tryHeaders(e.error && e.error.response && e.error.response.headers);
+  if (r != null) return r;
+  // 兜底：从错误文本抠 "x-ogw-ratelimit-reset": 52 之类的片段
+  const m = /x-ogw-ratelimit-reset["'\s:]+(\d+)/i.exec(JSON.stringify(e || ''));
+  if (m) { const n = Number(m[1]); if (Number.isFinite(n) && n > 0) return n; }
+  return null;
+}
+
+// 重试：普通失败短退避；若命中飞书频控（code 99991400 / 429），按飞书给的 x-ogw-ratelimit-reset 动态退避，
+// 拿不到 reset 头则退化为指数退避（1.5s→3s→6s…）。这样无论飞书真实阈值多少都能自适应避让，不必硬编码并发数。
+async function withRetry(fn, { retries = 3, timeoutMs = 8000, label = '', baseDelay = 400 } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -112,8 +133,23 @@ async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDe
       lastErr = e;
       const rl = isFrequencyLimit(e);
       if (attempt < retries) {
-        const d = rl ? Math.max(2000, baseDelay * (attempt + 2) * 4) : baseDelay * (attempt + 1);
-        log('  ' + label + ' 第' + (attempt + 1) + '次失败（' + (e.message || e) + '），' + d + 'ms 后重试' + (rl ? '（限流退避）' : ''), 'warn');
+        let d, mode;
+        if (rl) {
+          const reset = extractRateLimitReset(e);
+          if (reset != null) {
+            // 飞书明确告诉我们要等多少秒：按它等（加 0.3s 缓冲），但封顶 10s，避免单次等待过长拖垮单格取图
+            d = Math.min(10000, Math.max(1000, reset * 1000 + 300));
+            mode = '·按飞书reset头';
+          } else {
+            // 拿不到 reset 头：指数退避 1.5s → 3s → 6s…，比固定 2s 更稳
+            d = Math.min(10000, 1500 * Math.pow(2, attempt));
+            mode = '·指数';
+          }
+        } else {
+          d = baseDelay * (attempt + 1); // 普通失败短退避
+          mode = '';
+        }
+        log('  ' + label + ' 第' + (attempt + 1) + '次失败（' + (e.message || e) + '），' + Math.round(d) + 'ms 后重试' + (rl ? '（限流退避' + mode + '）' : ''), 'warn');
         await sleep(d);
       }
     }
