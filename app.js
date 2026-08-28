@@ -1481,10 +1481,20 @@ async function resolveMarkField() {
   if (sel !== '__create__') return sel;
   // 新建「已导出」复选框字段
   try {
+    // 若已存在同名「已导出」复选框（例如之前新建过），直接复用，避免重复建字段
+    const existing = state.fields.find((f) => f.type === FIELD_TYPE_CHECKBOX && f.name === '已导出');
+    if (existing && existing.id) {
+      log('检测到已存在「已导出」字段，直接复用（不重复新建）。', 'ok');
+      return existing.id;
+    }
     const res = await state.table.addField({ type: FIELD_TYPE_CHECKBOX, name: '已导出' });
-    const fieldId = res && res.id;
-    if (!fieldId) throw new Error('addField 未返回字段 id');
-    const fname = (res && res.name) || '已导出';
+    // 飞书 JS SDK 不同版本 addField 返回结构不一：兼容 id / fieldId / field.id / data.id
+    const fieldId = res && (res.id || res.fieldId || (res.field && res.field.id) || (res.data && res.data.id));
+    if (!fieldId) {
+      log('新建标记字段返回结构异常：' + JSON.stringify(res).slice(0, 240), 'err');
+      throw new Error('addField 未返回字段 id');
+    }
+    const fname = (res && (res.name || (res.field && res.field.name))) || '已导出';
     log('已新建「' + fname + '」复选框字段，等待索引生效…', 'ok');
     // 加入字段列表并刷新下拉（不重渲染字段选择，避免清掉用户勾选）
     state.fields.push({ id: fieldId, name: fname, type: FIELD_TYPE_CHECKBOX, isPrimary: false, isAttachment: false });
