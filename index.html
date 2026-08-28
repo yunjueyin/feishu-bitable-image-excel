@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260828u" />
+  <link rel="stylesheet" href="./styles.css?v=20260828w" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -121,7 +121,14 @@
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
       </div>
-      <p class="muted xs">图片以浮动方式嵌入单元格，WPS / Excel 各版本打开均可见（无需联网）。</p>
+      <div class="form-row inline-row">
+        <label for="imgFit">图片嵌入方式</label>
+        <div class="seg" id="imgFit" role="radiogroup" aria-label="图片嵌入方式">
+          <button type="button" class="seg-btn" data-val="float" aria-pressed="true">浮动（默认）</button>
+          <button type="button" class="seg-btn" data-val="fill" aria-pressed="false">填满单元格</button>
+        </div>
+      </div>
+      <p class="muted xs">浮动：图片锚定单元格、随单元格缩放；填满单元格：自动按图片尺寸调整行高列宽，图片恰好填满该格。两种均为 base64 内嵌，WPS / Excel 各版本打开均可见（无需联网）。</p>
     </section>
 
     <section class="card card-collapsible">
@@ -224,6 +231,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260828u"></script>
+  <script type="module" src="./app.js?v=20260828w"></script>
 </body>
 </html>

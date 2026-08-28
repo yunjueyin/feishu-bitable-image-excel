@@ -38,6 +38,7 @@ const state = {
   aborted: false, // 取消标志（功能5）
   onlyUnmarked: false, // 仅导出未标记行（功能4）
   imgQuality: 'orig', // orig=高清原图(本地直连飞书·默认推荐) / thumb=缩略图(最快·最稳)
+  imgFit: 'float', // float=浮动锚定单元格(默认) / fill=自动按图片尺寸调整行高列宽填满单元格
   imgCache: {},      // 会话内已取图缓存（断点续传/仅补缺失），键=质量|字段|记录|序号
   failPairs: new Set(),  // 本次导出失败图片键集合（供「仅重试失败项」）
   failRows: new Set(),   // 本次导出存在失败图片的记录 id
@@ -245,6 +246,7 @@ function applySelection() {
 function saveSettings() {
   LS.set('fie_settings', {
     imgQuality: getSeg('imgQuality'),
+    imgFit: getSeg('imgFit'),
     imgWidth: $('#imgWidth').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
     namingField: $('#namingField').value,
@@ -254,6 +256,7 @@ function saveSettings() {
 function applySettings() {
   const s = LS.get('fie_settings', {});
   if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
+  if (s.imgFit) setSeg('imgFit', s.imgFit);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (s.namingField) $('#namingField').value = s.namingField;
@@ -297,7 +300,7 @@ async function fetchImagesForRecords(records, attachFieldIds, onProgress) {
   let cursor = 0;
   let done = 0;
   const conc = 10; // CDN 字节下载限流远宽松，可并行 10 路提速；SDK 取链接仍由 sdkGate(4QPS/并发4) 硬限
-  log('取图限流：取链接接口 ' + SDK_RPS + ' QPS / 并发≤' + SDK_MAX_INFLIGHT + '；CDN 下载并发≤' + conc + '；记录分页500。', 'ok');
+  log('取图限流：取链接接口 ' + SDK_RPS + ' QPS / 并发≤' + SDK_MAX_INFLIGHT + '；CDN 下载并发≤' + conc + '；记录分页200(JS-SDK上限)。', 'ok');
   async function worker() {
     while (!state.aborted && cursor < records.length) {
       const i = cursor++;
@@ -766,7 +769,7 @@ async function loadData() {
     let page = 0;
     do {
       const resp = await state.table.getRecordsByPage(
-        Object.assign({ pageSize: 500, pageToken }, viewId ? { viewId } : {})
+        Object.assign({ pageSize: 200, pageToken }, viewId ? { viewId } : {})
       );
       const recs = resp.records || [];
       all.push(...recs);
@@ -1280,6 +1283,7 @@ async function exportExcel(options) {
     const plan = buildColumnPlan(fieldIds);
     const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgFit = (getSeg('imgFit') || 'float'); // float=浮动(默认) / fill=填满单元格
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0 }; // 交互3；empty=空单元格
     state.aborted = false; // 功能5
@@ -1316,7 +1320,8 @@ async function exportExcel(options) {
     // 列宽：图片列确保 ≥ DISPLAY_W 像素（字符宽 ≈ 像素/7，+1 字符余量防裁剪）；文字列约 154 像素
     plan.forEach((c, i) => {
       const col = ws.getColumn(i + 1);
-      col.width = c.isAttachment ? Math.max(12, Math.ceil(DISPLAY_W / 7) + 1) : 22;
+      // 填满单元格模式：列宽改由写行时按图片实际宽度动态撑开（见 writeRow）；此处仅给浮动态统一宽度
+      col.width = c.isAttachment ? (state.imgFit === 'fill' ? 10 : Math.max(12, Math.ceil(DISPLAY_W / 7) + 1)) : 22;
     });
     ws.getRow(1).height = 15;
 
@@ -1336,6 +1341,11 @@ async function exportExcel(options) {
             try {
               const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
               ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
+              // 填满单元格：列宽贴合图片宽度，使图片恰好填满该格（取该列已出现的最大宽度，保证宽图不溢出）
+              if (state.imgFit === 'fill') {
+                const col = ws.getColumn(ci + 1);
+                col.width = Math.max(col.width || 10, Math.round(Wd / 7));
+              }
             } catch (e) {
               log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
             }
@@ -1347,7 +1357,8 @@ async function exportExcel(options) {
           if (f && f.isPrimary) row.getCell(ci + 1).font = { bold: true };
         }
       }
-      row.height = Math.max(18, Math.round(maxRowPx * 0.75) + 4);
+      const rowPad = state.imgFit === 'fill' ? 0 : 4; // 填满模式不额外留白，图片恰好顶格
+      row.height = Math.max(18, Math.round(maxRowPx * 0.75) + rowPad);
     };
 
     // 仅勾选图片列时，图片全空的数据行无内容可导出，直接跳过（紧凑写行，不占 Excel 物理行）
@@ -1541,6 +1552,7 @@ async function exportZip(options) {
     state.failPairs = new Set();
     state.failRows = new Set();
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgFit = (getSeg('imgFit') || 'float'); // float=浮动(默认) / fill=填满单元格
 
     showCancel(); showProgress(); setProgress(0);
     log('开始生成图片 ZIP…');
@@ -1646,6 +1658,7 @@ function setSchemes(s) { LS.set(SCHEME_KEY, s); }
 function readSettingsFromUI() {
   return {
     imgQuality: getSeg('imgQuality'),
+    imgFit: getSeg('imgFit'),
     imgWidth: $('#imgWidth').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
     ignoreView: $('#ignoreView').checked,
@@ -1656,6 +1669,7 @@ function readSettingsFromUI() {
 function applySettingsToUI(s) {
   if (!s) return;
   if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
+  if (s.imgFit) setSeg('imgFit', s.imgFit);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (typeof s.ignoreView === 'boolean') $('#ignoreView').checked = s.ignoreView;
@@ -1786,7 +1800,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initTheme();
   $('#btnTheme').addEventListener('click', toggleTheme);
   // 分段控件点击即记忆（功能8）
-  ['imgQuality'].forEach((id) => {
+  ['imgQuality', 'imgFit'].forEach((id) => {
     const seg = document.getElementById(id);
     if (!seg) return;
     seg.querySelectorAll('.seg-btn').forEach((btn) => {
