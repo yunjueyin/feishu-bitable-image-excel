@@ -1554,7 +1554,7 @@ let _markQueue = [];
 let _markActive = 0;
 let _markFieldId = null;
 let _markWaiters = [];
-const MARK_CONC = 6; // 打勾是轻量布尔写入，且 setCellValue 不走取图共享限流，6 路安全
+const MARK_CONC = 12; // 打勾是轻量布尔写入，setCellValue 不走取图共享限流(独立API)，提至12路进一步提速；限流由 withRetry 兜底
 
 function enqueueMark(fieldId, records) {
   if (!fieldId || !records || !records.length) return;
