@@ -157,13 +157,31 @@ async function withRetry(fn, { retries = 3, timeoutMs = 8000, label = '', baseDe
   throw lastErr;
 }
 
-// 全局并发信号量：飞书 getCellThumbnailUrls / getCellAttachmentUrls 是服务端生成/鉴权操作，
-// 对并发敏感；用信号量把「实际在途的 SDK 调用数」硬限到很小的值，避免压垮服务导致整批超时。
-// 注意：飞书多维表格接口不支持提频；触发限流返回 HTTP 429 / code 99991400（响应头带 x-ogw-ratelimit-reset）。
-// 关键：缩略图与原图共用「同一个」信号量，确保无论多少记录 worker 并发，全局在途 SDK 调用永远 ≤ SDK_INFLIGHT。
-//   —— 之前 thumb/attach 各限 6、再叠加 6 个记录 worker，峰值会瞬间并发 12 路，正是被飞书限流的根因；
-//      现在统一收口到单信号量，把「并发数」与「被限流」彻底解耦（已由 withRetry 限流退避兜底）。
-const SDK_INFLIGHT = 6; // 飞书取图在途并发上限（单处可调：太慢调大、频繁失败调小）
+// 全局限流：根据官方资料，取图相关的两个核心接口均受 5 QPS 限制（限流是 QPS 维度，非并发连接维度）：
+//   · getCellThumbnailUrls / getCellAttachmentUrls 内部命中「批量获取素材临时下载链接」接口 → 5 QPS
+//   · 实际从返回的 URL 下载图片字节走 CDN，CDN 限流远宽松，可更高并发（见下方记录循环 conc）
+// 安全策略（对齐官方建议，预留 1 QPS 冗余，绝不跑满 5 QPS 上限）：
+//   ① 令牌桶限速率：把「取链接」SDK 调用严格限制在 4 QPS（≈250ms 间隔），避免突发流量瞬间突破阈值触发 429；
+//   ② 并发信号量：同时在途 SDK 调用 ≤ 4，缩略图与原图共用同一把锁，不会叠加成 8/12 路；
+//   ③ 动态退避：命中限流(99991400/429)时按飞书 x-ogw-ratelimit-reset 头退避（见 withRetry）。
+const SDK_RPS = 4;            // 取链接接口目标速率：4 QPS（官方 5 QPS，预留 1 余量，不跑满）
+const SDK_MAX_INFLIGHT = 4;   // 同时在途 SDK 调用上限：4（官方建议的 3~5 安全区间，含 1 余量）
+
+// 令牌桶：补充令牌并控制速率。桶容量 = SDK_MAX_INFLIGHT，允许开局短暂突发，之后恒定 ≤ SDK_RPS。
+let _sdkTokens = SDK_MAX_INFLIGHT;
+let _sdkTokenLast = Date.now();
+function sdkThrottle() {
+  return new Promise((resolve) => {
+    const tick = () => {
+      const now = Date.now();
+      _sdkTokens = Math.min(SDK_MAX_INFLIGHT, _sdkTokens + ((now - _sdkTokenLast) / 1000) * SDK_RPS);
+      _sdkTokenLast = now;
+      if (_sdkTokens >= 1) { _sdkTokens -= 1; resolve(); }
+      else setTimeout(tick, Math.max(30, Math.ceil((1 - _sdkTokens) / SDK_RPS * 1000)));
+    };
+    tick();
+  });
+}
 function makeLimiter(max) {
   let active = 0;
   const queue = [];
@@ -183,10 +201,17 @@ function makeLimiter(max) {
     if (active < max) { active++; job.run(); } else { queue.push(job); }
   });
 }
-// 单一共享信号量：缩略图与原图都走它，全局在途调用数恒定 ≤ SDK_INFLIGHT
-const sdkLimit = makeLimiter(SDK_INFLIGHT);
-const thumbLimit = sdkLimit;   // 同时在途的缩略图请求 ≤ SDK_INFLIGHT
-const attachLimit = sdkLimit;  // 同时在途的原图请求共享同一上限，不会叠加成 12 路
+// 单一共享信号量：缩略图与原图都走它，全局在途 SDK 调用恒定 ≤ SDK_MAX_INFLIGHT
+const sdkLimit = makeLimiter(SDK_MAX_INFLIGHT);
+// 先过令牌桶（限速率 ≤4 QPS），再过信号量（限并发 ≤4）。已在 makeLimiter 内处理取消短路。
+async function sdkGate(fn) {
+  if (state.aborted) return undefined;  // 已取消：直接跳过本次 SDK 调用，不发起请求
+  await sdkThrottle();                  // 速率 ≤ 4 QPS
+  if (state.aborted) return undefined;
+  return sdkLimit(fn);                  // 并发 ≤ 4
+}
+const thumbLimit = sdkGate;   // 取缩略图链接：速率4QPS + 并发4
+const attachLimit = sdkGate;  // 取原图链接：共享同一令牌桶与信号量，不叠加
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -271,7 +296,8 @@ async function fetchImagesForRecords(records, attachFieldIds, onProgress) {
   const out = new Array(records.length);
   let cursor = 0;
   let done = 0;
-  const conc = 6; // 实际在途 SDK 调用由 thumbLimit/attachLimit(各6) 硬限；这里仅控制记录循环并发，固定为 6 以饱和信号量
+  const conc = 10; // CDN 字节下载限流远宽松，可并行 10 路提速；SDK 取链接仍由 sdkGate(4QPS/并发4) 硬限
+  log('取图限流：取链接接口 ' + SDK_RPS + ' QPS / 并发≤' + SDK_MAX_INFLIGHT + '；CDN 下载并发≤' + conc + '；记录分页500。', 'ok');
   async function worker() {
     while (!state.aborted && cursor < records.length) {
       const i = cursor++;
@@ -740,7 +766,7 @@ async function loadData() {
     let page = 0;
     do {
       const resp = await state.table.getRecordsByPage(
-        Object.assign({ pageSize: 200, pageToken }, viewId ? { viewId } : {})
+        Object.assign({ pageSize: 500, pageToken }, viewId ? { viewId } : {})
       );
       const recs = resp.records || [];
       all.push(...recs);
