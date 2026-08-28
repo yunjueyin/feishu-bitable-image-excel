@@ -1481,38 +1481,29 @@ async function resolveMarkField() {
   if (sel !== '__create__') return sel;
   // 新建「已导出」复选框字段
   try {
-    // 实时拉取字段列表，判断「已导出」复选框是否已存在（直接 getFields 比 state.fields 更可靠，避免重复建、绕开缓存）
-    let allFields = [];
-    if (state.table && typeof state.table.getFields === 'function') {
-      try { allFields = (await state.table.getFields()) || []; } catch (e) { allFields = state.fields || []; }
-    } else {
-      allFields = state.fields || [];
-    }
+    // 判断「已导出」复选框是否已存在（优先复用，避免重复建字段）
+    const allFields = (state.fields && state.fields.length) ? state.fields : [];
     const existing = allFields.find((f) => f.type === FIELD_TYPE_CHECKBOX && f.name === '已导出');
     if (existing && existing.id) {
       log('检测到已存在「已导出」字段，直接复用（不重复新建）。', 'ok');
-      if (!state.fields.find((f) => f.id === existing.id)) state.fields.push(existing);
       return existing.id;
     }
     // 不存在则新建
     const res = await state.table.addField({ type: FIELD_TYPE_CHECKBOX, name: '已导出' });
-    // 诊断：打印真实返回结构，便于定位宿主 SDK 版本差异
+    // 诊断：打印真实返回结构。本机宿主 addField 直接返回字段 id 字符串（如 "fldIVqOAeH"），非对象
     log('addField 返回结构：' + JSON.stringify(res).slice(0, 300), 'info');
-    // 飞书 JS SDK 不同版本 addField 返回结构不一：兼容 id / fieldId / field.id / data.id
-    let fieldId = res && (res.id || res.fieldId || (res.field && res.field.id) || (res.data && res.data.id));
-    // 兜底：新建后再次拉取字段列表按 name 定位（彻底绕开返回结构不一致；建成功后字段必在列表内）
-    if (!fieldId) {
-      try {
-        const after = (await state.table.getFields()) || [];
-        const hit = after.find((f) => f.name === '已导出' && f.type === FIELD_TYPE_CHECKBOX);
-        if (hit && hit.id) { fieldId = hit.id; log('已从字段列表按 name 取到「已导出」id。', 'ok'); }
-      } catch (e2) { log('重新拉取字段列表失败：' + e2.message, 'err'); }
+    // 兼容多种返回形态：① 裸字符串 id（本机宿主实测）② {id} ③ {fieldId} ④ {field:{id}} ⑤ {data:{id}}
+    let fieldId = null;
+    if (typeof res === 'string' && res.trim()) {
+      fieldId = res.trim();
+    } else if (res && typeof res === 'object') {
+      fieldId = res.id || res.fieldId || (res.field && res.field.id) || (res.data && res.data.id);
     }
     if (!fieldId) {
-      log('新建标记字段返回结构异常且字段列表未找到，res=' + JSON.stringify(res).slice(0, 240), 'err');
+      log('新建标记字段返回结构异常，res=' + JSON.stringify(res).slice(0, 240), 'err');
       throw new Error('addField 未返回字段 id');
     }
-    const fname = (res && (res.name || (res.field && res.field.name))) || '已导出';
+    const fname = (res && typeof res === 'object' && (res.name || (res.field && res.field.name))) || '已导出';
     log('已新建「' + fname + '」复选框字段（id=' + fieldId + '），等待索引生效…', 'ok');
     // 加入字段列表并刷新下拉（不重渲染字段选择，避免清掉用户勾选）
     state.fields.push({ id: fieldId, name: fname, type: FIELD_TYPE_CHECKBOX, isPrimary: false, isAttachment: false });
