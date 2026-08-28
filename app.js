@@ -1088,10 +1088,26 @@ function fetchWithTimeout(url, ms) {
 //  - 高清原图模式：本地直连飞书附件 URL（不借助代理），失败再回退缩略图
 async function fetchCellImages(fieldId, recordId, cellVal) {
   const rawItems = Array.isArray(cellVal) ? cellVal : [];
-  const tokens = rawItems.filter((x) => x && x.token).map((x) => x.token);
+  // 交互3：识别图片 vs 视频/其他。视频单元格直接跳过——不取图、不重试、不计失败，避免无谓的飞书接口重试。
+  const isImageItem = (x) => {
+    if (!x || !x.token) return false;
+    const mt = (x.mimeType || x.type || '').toLowerCase();
+    if (mt && /image\//.test(mt)) return true;
+    if (mt && /video\//.test(mt)) return false;
+    const name = (x.name || (typeof x.url === 'string' ? x.url : '')).toLowerCase();
+    if (/\.(png|jpe?g|gif|bmp|webp|svg|heic|heif|tiff?)$/.test(name)) return true;
+    if (/\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|3gp)$/.test(name)) return false;
+    return true; // 无法判断：保守当作图片尝试（保持原兼容行为）
+  };
+  const imgItems = rawItems.filter(isImageItem);
+  const tokens = imgItems.map((x) => x.token);
   if (!tokens.length) {
-    // 空单元格：无有效图片 token（字段缺失 / 空数组 / 占位无图）。直接返回——不取图、不计失败、不进「仅重试失败项」。
-    if (state.fetchStat) state.fetchStat.empty += 1;
+    // 空单元格 / 视频单元格：无有效图片 token。直接返回——不取图、不计失败、不进「仅重试失败项」。
+    if (state.fetchStat) {
+      const hasNonImg = rawItems.some((x) => x && x.token && !isImageItem(x));
+      if (hasNonImg) state.fetchStat.skipped += 1; // 视频/非图片被跳过
+      else state.fetchStat.empty += 1;             // 真空白
+    }
     return [];
   }
   const empty = () => new Array(tokens.length).fill(null);
@@ -1109,7 +1125,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
 
   const run = async () => {
     if (state.aborted) return out; // 取消：整格直接短路返回，不发起任何请求
-    const beforeCount = out.filter(Boolean).length;
+    let thumbGot = 0, origFallbackGot = 0, origDirectGot = 0; // 取图计数（区分缩略图/原图直取/原图回退）
 
     // ① 缩略图（仅非 orig 模式）：SDK 直接返回 base64，无 CORS，最快。受信号量限流 + 12s 超时 + 轻度重试。
     if (q !== 'orig') {
@@ -1134,7 +1150,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           if (thumbs[k] != null) {
             try {
               const im = await thumbToExcelImage(thumbs[k]);
-              if (im) { out[idx] = im; addImgBytes(im); }
+              if (im) { out[idx] = im; addImgBytes(im); thumbGot++; }
             } catch (e) {}
           }
         }));
@@ -1177,7 +1193,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
               // 缩略图模式的兜底：原图取不到时缩放至 1200px 安全网，避免空图（体积可控）。
               im = await blobToExcelImageResized(await resp.blob(), 1200);
             }
-            if (im) { out[idx] = im; addImgBytes(im); }
+            if (im) { out[idx] = im; addImgBytes(im); if (q === 'orig') origDirectGot++; else origFallbackGot++; }
           } catch (e) { /* 取不到原图：留空 */ }
         }));
       }
@@ -1191,13 +1207,12 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       }
     }
 
-    // 取图实时计数（交互3）：成功/缺失/原图回退
+    // 取图实时计数（交互3）：成功/失败/原图回退。缓存命中不重复计数；「回退」仅指「缩略图失败→原图兜底成功」。
     if (state.fetchStat) {
-      const got = out.filter(Boolean).length;
-      const filled = Math.max(0, got - beforeCount);
-      state.fetchStat.ok += got;
-      state.fetchStat.fail += (out.length - got);
-      if (filled > 0) state.fetchStat.fallback += filled;
+      const newlyGot = thumbGot + origFallbackGot + origDirectGot;
+      state.fetchStat.ok += newlyGot;
+      state.fetchStat.fail += Math.max(0, need.length - newlyGot);
+      state.fetchStat.fallback += origFallbackGot;
     }
 
     // 记录失败项（供「仅重试失败项」入口）
@@ -1285,7 +1300,7 @@ async function exportExcel(options) {
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
     state.imgFit = (getSeg('imgFit') || 'float'); // float=浮动(默认) / fill=填满单元格
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
-    state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0 }; // 交互3；empty=空单元格
+    state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0, skipped: 0 }; // 交互3；empty=空单元格；skipped=视频/非图片跳过
     state.aborted = false; // 功能5
     state.lastExport = 'excel';
     state.retryMode = !!options.skipConfirm;
@@ -1365,6 +1380,7 @@ async function exportExcel(options) {
     const onlyImgCols = attachFields.length > 0 && attachFields.length === plan.length;
     let outRow = 0;            // 实际写入 Excel 的紧凑行号（0 基；表头为第 1 行）
     let skippedEmptyRows = 0;
+    const writtenRecs = [];    // 实际写出 Excel 的记录（用于「已导出」标记，排除仅图片列且全空的行）
 
     // 功能6：分块取图→写表→释放，避免全量 base64 驻留内存导致 OOM
     const CHUNK = 50;
@@ -1375,8 +1391,8 @@ async function exportExcel(options) {
       const chunk = recs.slice(start, end);
       const imgData = attachFields.length
         ? await fetchImagesForRecords(chunk, attachFields, (d) => {
-            setProgress(Math.round((processed + d) / total * 70));
-            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + ' 空' + state.fetchStat.empty + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+            setProgress(Math.round((processed + d) / total * 100));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
       for (let k = 0; k < chunk.length; k++) {
@@ -1385,10 +1401,11 @@ async function exportExcel(options) {
         const allImgEmpty = attachFields.length > 0 && attachFields.every((fid) => ((cache[fid] || []).length === 0));
         if (onlyImgCols && allImgEmpty) { skippedEmptyRows++; continue; }
         writeRow(outRow, chunk[k], cache);
+        writtenRecs.push(chunk[k]);
         outRow++;
       }
       processed += chunk.length;
-      setProgress(70 + Math.round(processed / total * 30));
+      setProgress(Math.round(processed / total * 100));
       setProgressCount(processed + ' / ' + total + ' 行写入 · 已写 ' + outRow + ' 行' + (state.fetchBytes ? ' · 已取图 ' + humanSize(state.fetchBytes) : ''));
       if (processed % 200 === 0) log('  写入第 ' + processed + ' / ' + total + ' 行');
       if (state.aborted) break;
@@ -1412,7 +1429,7 @@ async function exportExcel(options) {
     showToast('Excel 导出完成', name + '（' + total + ' 行 · ' + humanSize(fileSize) + ' · 图片 原图' + state.stat.orig + '/缩略图' + state.stat.thumb + '）');
     if (!state.retryMode) {
       try {
-        await markExported(recs); // 功能4：只标记本次导出的有效行
+        await markExported(writtenRecs); // 功能4：只标记本次实际写出 Excel 的有效行
       } catch (e) {
         log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
       }
@@ -1439,11 +1456,13 @@ async function markExported(records) {
       fieldId = res && res.id;
       if (!fieldId) throw new Error('addField 未返回字段 id');
       const fname = (res && res.name) || '已导出';
-      log('已新建「' + fname + '」复选框字段', 'ok');
+      log('已新建「' + fname + '」复选框字段，等待索引生效…', 'ok');
       // 加入字段列表并刷新下拉（不重渲染字段选择，避免清掉用户勾选）
       state.fields.push({ id: fieldId, name: fname, type: FIELD_TYPE_CHECKBOX, isPrimary: false, isAttachment: false });
       renderMarkOptions(fieldId);
       const mf = $('#markField'); if (mf) mf.value = fieldId;
+      // 关键修复：飞书新建字段后需约 1~2 秒索引生效，立即写入会静默失败（复选框空白）。
+      await sleep(2000);
     } catch (e) {
       log('新建标记字段失败：' + e.message + '（已跳过标记）', 'err');
       return;
@@ -1454,13 +1473,15 @@ async function markExported(records) {
   let okCount = 0;
   const n = records.length;
   let done = 0, cursor = 0;
-  const conc = 4;
+  const conc = 3; // 写单元格接口限流较严，降低并发并加重试，避免静默失败
   async function worker() {
     while (cursor < n) {
       const i = cursor++;
       const rec = records[i];
       try {
-        await withTimeout(state.table.setCellValue(fieldId, rec.recordId, true), 6000, 'setCellValue');
+        // withRetry 覆盖限流/瞬时失败；复选框值格式为布尔 true（飞书 type=7）
+        await withRetry(() => state.table.setCellValue(fieldId, rec.recordId, true),
+          { retries: 3, timeoutMs: 6000, label: 'setCellValue(' + rec.recordId + ')', baseDelay: 400 });
         okCount++;
       } catch (e) {
         log('  标记失败（第 ' + (i + 1) + ' 行）：' + e.message, 'warn');
@@ -1544,7 +1565,7 @@ async function exportZip(options) {
 
     const namingId = $('#namingField').value;
     state.stat = { orig: 0, thumb: 0 };
-    state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0 }; // 交互3；empty=空单元格
+    state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0, skipped: 0 }; // 交互3；empty=空单元格；skipped=视频/非图片跳过
     state.aborted = false; // 功能5
     state.lastExport = 'zip';
     state.retryMode = !!options.skipConfirm;
@@ -1577,6 +1598,7 @@ async function exportZip(options) {
 
     // ZIP 仅导出图片：图片全空的数据行无文件可写，直接跳过
     let skippedEmptyRows = 0;
+    const zipWrittenRecs = []; // 实际写入 ZIP 的记录（用于「已导出」标记，排除图片全空的行）
     // 功能6：分块取图→写 ZIP→释放，降低内存峰值
     const CHUNK = 50;
     let processed = 0;
@@ -1587,8 +1609,8 @@ async function exportZip(options) {
       const chunk = recs.slice(start, end);
       const imgData = attachFields.length
         ? await fetchImagesForRecords(chunk, attachFields.map((f) => f.id), (d) => {
-            setProgress(Math.round((processed + d) / total * 80));
-            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成' + state.fetchStat.ok + ' 回退' + state.fetchStat.fallback + ' 空' + state.fetchStat.empty + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+            setProgress(Math.round((processed + d) / total * 100));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
           })
         : chunk.map(() => ({}));
       for (let k = 0; k < chunk.length; k++) {
@@ -1596,6 +1618,7 @@ async function exportZip(options) {
         const allImgEmpty = attachFields.length > 0 && attachFields.every((fid) => ((cache[fid] || []).length === 0));
         if (allImgEmpty) { skippedEmptyRows++; continue; } // ZIP 仅图片：全空行无内容，跳过
         const rec = chunk[k];
+        zipWrittenRecs.push(rec);
         const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
         for (const f of attachFields) {
           const imgs = cache[f.id] || [];
@@ -1609,7 +1632,7 @@ async function exportZip(options) {
         }
       }
       processed += chunk.length;
-      setProgress(80 + Math.round(processed / total * 20));
+      setProgress(Math.round(processed / total * 100));
       setProgressCount(processed + ' / ' + total + ' 行 · ' + fileCount + ' 张图' + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
       if (state.aborted) break;
     }
@@ -1632,7 +1655,7 @@ async function exportZip(options) {
     showToast('ZIP 导出完成', name + '（' + fileCount + ' 张图片 · ' + humanSize(fileSize) + '）');
     if (!state.retryMode) {
       try {
-        await markExported(recs); // 功能4：只标记本次导出的有效行
+        await markExported(zipWrittenRecs); // 功能4：只标记本次实际写入 ZIP 的有效行
       } catch (e) {
         log('标记「已导出」失败（不影响已生成的文件）：' + (e && e.message ? e.message : e), 'warn');
       }
