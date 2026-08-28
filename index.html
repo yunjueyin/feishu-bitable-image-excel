@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260828y" />
+  <link rel="stylesheet" href="./styles.css?v=20260828z" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -121,14 +121,6 @@
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
       </div>
-      <div class="form-row inline-row">
-        <label for="imgFit">图片嵌入方式</label>
-        <div class="seg" id="imgFit" role="radiogroup" aria-label="图片嵌入方式">
-          <button type="button" class="seg-btn" data-val="float" aria-pressed="true">浮动（默认）</button>
-          <button type="button" class="seg-btn" data-val="fill" aria-pressed="false">填满单元格</button>
-        </div>
-      </div>
-      <p class="muted xs">浮动：图片锚定单元格、随单元格缩放；填满单元格：自动按图片尺寸调整行高列宽，图片恰好填满该格。两种均为 base64 内嵌，WPS / Excel 各版本打开均可见（无需联网）。</p>
     </section>
 
     <section class="card card-collapsible">
@@ -164,6 +156,19 @@
       </div>
     </section>
   </main>
+
+  <!-- 正在取消（取消导出时的反馈 + 可恢复） -->
+  <div id="cancelOverlay" class="cancel-overlay hidden" role="dialog" aria-modal="true" aria-label="正在取消">
+    <div class="cancel-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="cancel-title">正在取消…</p>
+      <p class="muted xs">已停止取图与写入，已导出进度会保留。</p>
+      <div class="cancel-actions">
+        <button id="btnResumeExport" class="btn btn-primary" type="button"><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg></span>继续导出</button>
+        <button id="btnForceCancel" class="btn btn-soft" type="button">确认取消</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 设置弹窗（仅放高级项） -->
   <div class="modal-mask" id="settingsModal" hidden>
@@ -231,6 +236,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260828y"></script>
+  <script type="module" src="./app.js?v=20260828z"></script>
 </body>
 </html>
