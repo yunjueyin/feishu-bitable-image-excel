@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260828r" />
+  <link rel="stylesheet" href="./styles.css?v=20260828s" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -128,7 +128,6 @@
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
       </div>
-      <p class="muted xs">质量：高清原图直连飞书附件（无需代理），保留原始分辨率，推荐优先；若受 CORS 限制取不到像素则该格留空。缩略图由飞书直接返回、不逐个联网，最快最稳、体积最小。嵌入：贴入图所有版本可见；内嵌额外写 IMAGE 公式，Excel 365/新版 WPS 下复制单元格可带走图片。</p>
     </section>
 
     <section class="card card-collapsible">
@@ -231,6 +230,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260828r"></script>
+  <script type="module" src="./app.js?v=20260828s"></script>
 </body>
 </html>
