@@ -92,7 +92,17 @@ function withTimeout(promise, ms, label) {
   return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
 }
 // 带超时 + 重试的 SDK 调用：飞书 getCellThumbnailUrls 等服务端生成操作在高并发下会超时，
-// 但串行/低并发重试通常能成功。retries 次重试，退避递增（base, base*2, base*3...）。
+// 是否触发飞书频控（限流）。code 99991400 / "frequency limit" / HTTP 429 均视为限流。
+function isFrequencyLimit(e) {
+  if (!e) return false;
+  const code = e.code || (e.error && e.error.code);
+  if (code === 99991400) return true;
+  const s = [e.message, e.msg, e.errmsg, JSON.stringify(e)].join(' ');
+  return /frequency limit|too many requests|99991400|\b429\b/i.test(s);
+}
+
+// 重试：普通失败短退避；若命中飞书频控（code 99991400 / 429），拉长退避并多给一次重试，
+// 避免「并发一高就被限流→直接取图失败」。
 async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDelay = 300 } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -100,9 +110,10 @@ async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDe
       return await withTimeout(fn(), timeoutMs, label + (attempt > 0 ? ' #' + attempt : ''));
     } catch (e) {
       lastErr = e;
+      const rl = isFrequencyLimit(e);
       if (attempt < retries) {
-        const d = baseDelay * (attempt + 1);
-        log('  ' + label + ' 第' + (attempt + 1) + '次失败（' + (e.message || e) + '），' + d + 'ms 后重试', 'warn');
+        const d = rl ? Math.max(2000, baseDelay * (attempt + 2) * 4) : baseDelay * (attempt + 1);
+        log('  ' + label + ' 第' + (attempt + 1) + '次失败（' + (e.message || e) + '），' + d + 'ms 后重试' + (rl ? '（限流退避）' : ''), 'warn');
         await sleep(d);
       }
     }
@@ -111,20 +122,35 @@ async function withRetry(fn, { retries = 2, timeoutMs = 8000, label = '', baseDe
 }
 
 // 全局并发信号量：飞书 getCellThumbnailUrls / getCellAttachmentUrls 是服务端生成/鉴权操作，
-// 对并发极敏感；用信号量把「实际在途的 SDK 调用数」硬限到很小的值，避免压垮服务导致整批超时。
+// 对并发敏感；用信号量把「实际在途的 SDK 调用数」硬限到很小的值，避免压垮服务导致整批超时。
+// 注意：飞书多维表格接口不支持提频；触发限流返回 HTTP 429 / code 99991400（响应头带 x-ogw-ratelimit-reset）。
+// 关键：缩略图与原图共用「同一个」信号量，确保无论多少记录 worker 并发，全局在途 SDK 调用永远 ≤ SDK_INFLIGHT。
+//   —— 之前 thumb/attach 各限 6、再叠加 6 个记录 worker，峰值会瞬间并发 12 路，正是被飞书限流的根因；
+//      现在统一收口到单信号量，把「并发数」与「被限流」彻底解耦（已由 withRetry 限流退避兜底）。
+const SDK_INFLIGHT = 6; // 飞书取图在途并发上限（单处可调：太慢调大、频繁失败调小）
 function makeLimiter(max) {
   let active = 0;
   const queue = [];
-  const next = () => { if (queue.length && active < max) { active++; const run = queue.shift(); run(); } };
+  const next = () => {
+    if (!queue.length || active >= max) return;
+    if (state.aborted) { queue.shift().skip(); return; } // 取消：唤醒队列首项并让它短路跳过
+    active++;
+    queue.shift().run();
+  };
   return (fn) => new Promise((resolve, reject) => {
-    const run = () => {
-      Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); });
+    const run = () => { Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); }); };
+    const job = {
+      run,
+      skip: () => resolve(undefined), // 取消时直接跳过本次 SDK 调用，不发起请求
     };
-    if (active < max) { active++; run(); } else { queue.push(run); }
+    if (state.aborted) { job.skip(); return; } // 已取消，新增调用也直接跳过
+    if (active < max) { active++; job.run(); } else { queue.push(job); }
   });
 }
-const thumbLimit = makeLimiter(6);   // 同时在途的缩略图请求 ≤ 6（提速：飞书接口 6 路通常稳定）
-const attachLimit = makeLimiter(6);  // 同时在途的原图请求 ≤ 6
+// 单一共享信号量：缩略图与原图都走它，全局在途调用数恒定 ≤ SDK_INFLIGHT
+const sdkLimit = makeLimiter(SDK_INFLIGHT);
+const thumbLimit = sdkLimit;   // 同时在途的缩略图请求 ≤ SDK_INFLIGHT
+const attachLimit = sdkLimit;  // 同时在途的原图请求共享同一上限，不会叠加成 12 路
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -489,8 +515,10 @@ async function loadFields() {
   // 导出列序对齐：按当前视图（即界面实际列序）重排，避免导出顺序与表格不一致
   try {
     const view = await state.table.getActiveView();
-    const vfields = view && view.fields;
-    if (Array.isArray(vfields) && vfields.length) {
+    // 注意：IWidgetView 没有 .fields 属性，必须用 getFieldMetaList() 取「当前视图的列序」
+    const vmetas = view ? await view.getFieldMetaList() : null;
+    const vfields = Array.isArray(vmetas) ? vmetas : null;
+    if (vfields && vfields.length) {
       const order = vfields
         .map((x) => (typeof x === 'string' ? x : (x && (x.fieldId || x.id))))
         .filter(Boolean);
@@ -1017,6 +1045,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   if (!need.length) return out; // 全部命中缓存，直接返回（不计入 fetchStat，省一次空跑）
 
   const run = async () => {
+    if (state.aborted) return out; // 取消：整格直接短路返回，不发起任何请求
     const beforeCount = out.filter(Boolean).length;
 
     // ① 缩略图（仅非 orig 模式）：SDK 直接返回 base64，无 CORS，最快。受信号量限流 + 12s 超时 + 轻度重试。
@@ -1025,10 +1054,11 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       let thumbs = null;
       const Q = resolveQuality();
       for (const qq of [Q.HIGH, Q.MAX]) {
+        if (state.aborted) return out; // 取消：缩略图阶段直接短路，不发起后续请求
         try {
           const r = await thumbLimit(() => withRetry(
             async () => state.table.getCellThumbnailUrls(needTokens, fieldId, recordId, qq),
-            { retries: 2, timeoutMs: 12000, label: 'getCellThumbnailUrls(q' + qq + ')', baseDelay: 300 }
+            { retries: 1, timeoutMs: 8000, label: 'getCellThumbnailUrls(q' + qq + ')', baseDelay: 300 }
           ));
           if (r && r.length) { thumbs = r; break; }
           else log('  缩略图质量 ' + qq + ' 返回空（tokens=' + needTokens.length + '）', 'warn');
@@ -1056,6 +1086,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
 
     // ② 原图兜底（orig 模式主力；或缩略图失败时的兜底）：直连飞书附件 URL 本地下载 + canvas 缩放转 JPEG。
     //    飞书 CDN 偶尔 CORS 拦截导致下载失败，属正常，失败即跳过、不刷屏。
+    if (state.aborted) return out; // 取消：缩略图已得则直接返回，不再走原图兜底
     const stillMissing = [];
     for (let i = 0; i < tokens.length; i++) if (!out[i]) stillMissing.push(i);
     if (stillMissing.length) {
@@ -1064,7 +1095,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
         const missTokens = stillMissing.map((i) => tokens[i]);
         urls = await attachLimit(() => withRetry(
           () => state.table.getCellAttachmentUrls(missTokens, fieldId, recordId),
-          { retries: 1, timeoutMs: 10000, label: 'getCellAttachmentUrls', baseDelay: 500 }
+          { retries: 1, timeoutMs: 8000, label: 'getCellAttachmentUrls', baseDelay: 500 }
         ));
       } catch (e) { /* 兜底失败，进入下方空图判断 */ }
       if (urls && urls.length) {
@@ -1072,7 +1103,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           const u = urls[k];
           if (!u) return;
           try {
-            const resp = await fetchWithTimeout(u, 6000);
+            const resp = await fetchWithTimeout(u, 5000);
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             let im;
             if (q === 'orig') {
@@ -1121,8 +1152,9 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     return out;
   };
 
-  // 整体超时兜底：单格取图最多 45s，超时则放弃该格图片返回空，避免一个单元格的飞书接口挂起把整批导出拖死。
-  return withTimeout(run(), 45000, 'fetchCellImages').catch((e) => {
+    // 整体超时兜底：单格取图最多 25s，超时则放弃该格图片返回空，避免一个单元格的飞书接口挂起把整批导出拖死。
+    // 配合上方缩略图 8s / 原图 8s / 下载 5s 的各级超时与 abort 检查，空格子可秒级放行、取消可秒级响应。
+  return withTimeout(run(), 25000, 'fetchCellImages').catch((e) => {
     log('  单格取图超时已跳过（' + tokens.length + ' 张）', 'warn');
     return empty();
   });
