@@ -220,7 +220,6 @@ function applySelection() {
 function saveSettings() {
   LS.set('fie_settings', {
     imgQuality: getSeg('imgQuality'),
-    imgMode: getSeg('imgMode'),
     imgWidth: $('#imgWidth').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
     namingField: $('#namingField').value,
@@ -230,7 +229,6 @@ function saveSettings() {
 function applySettings() {
   const s = LS.get('fie_settings', {});
   if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
-  if (s.imgMode) setSeg('imgMode', s.imgMode);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (s.namingField) $('#namingField').value = s.namingField;
@@ -1255,7 +1253,6 @@ async function exportExcel(options) {
     if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return finishExportUI(); }
     const plan = buildColumnPlan(fieldIds);
     const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-    state.imgMode = (getSeg('imgMode') || 'float'); // float=浮动图片(兼容所有) / image=IMAGE 公式(需365)
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0 }; // 交互3；empty=空单元格
@@ -1313,13 +1310,6 @@ async function exportExcel(options) {
             try {
               const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
               ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
-              if (state.imgMode === 'image') {
-                try {
-                  const src = 'data:' + img.extension + ';base64,' + img.base64;
-                  const r = resizeImage(src, DISPLAY_W, 0.85);
-                  Promise.resolve(r).then((rd) => { if (rd && rd.length <= 32000) { row.getCell(ci + 1).value = { formula: 'IMAGE("' + rd + '",1)' }; state.stat.embedded++; } });
-                } catch (e) { /* 公式失败无影响 */ }
-              }
             } catch (e) {
               log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
             }
@@ -1374,14 +1364,7 @@ async function exportExcel(options) {
     const name = makeXlsxName();
     triggerDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     setProgress(100);
-    let imgTip = '';
-    if (state.imgMode === 'image' && state.stat.embedded > 0) {
-      imgTip = '；图片已贴入单元格（全版本可见），并写入 IMAGE 公式：用 Excel 365 / 新版 WPS 打开时复制单元格可带走图片，旧版自动忽略公式、仍显示贴入图。';
-    } else if (state.imgMode === 'image') {
-      imgTip = '；图片已贴入单元格（全版本可见）；本次图片较大未写入 IMAGE 公式，复制带走需 Excel 365。';
-    } else {
-      imgTip = '；图片以浮动方式贴入单元格（全版本可见）；旧版 Excel 复制单元格不会带走图片（Excel 原生限制）。';
-    }
+    const imgTip = '；图片以浮动方式嵌入单元格（base64 内嵌、无需联网，WPS / Excel 各版本打开均可见）。';
     const fileSize = buf.byteLength;
     log('导出完成：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + imgTip + '）', 'ok');
     if (skippedEmptyRows > 0) log('已跳过 ' + skippedEmptyRows + ' 行（仅选图片列且图片全空，无内容可导出）', 'warn');
@@ -1637,7 +1620,6 @@ function setSchemes(s) { LS.set(SCHEME_KEY, s); }
 function readSettingsFromUI() {
   return {
     imgQuality: getSeg('imgQuality'),
-    imgMode: getSeg('imgMode'),
     imgWidth: $('#imgWidth').value,
     onlyUnmarked: $('#onlyUnmarked').checked,
     ignoreView: $('#ignoreView').checked,
@@ -1648,7 +1630,6 @@ function readSettingsFromUI() {
 function applySettingsToUI(s) {
   if (!s) return;
   if (s.imgQuality) setSeg('imgQuality', s.imgQuality);
-  if (s.imgMode) setSeg('imgMode', s.imgMode);
   if (s.imgWidth) $('#imgWidth').value = s.imgWidth;
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (typeof s.ignoreView === 'boolean') $('#ignoreView').checked = s.ignoreView;
@@ -1779,7 +1760,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initTheme();
   $('#btnTheme').addEventListener('click', toggleTheme);
   // 分段控件点击即记忆（功能8）
-  ['imgQuality', 'imgMode'].forEach((id) => {
+  ['imgQuality'].forEach((id) => {
     const seg = document.getElementById(id);
     if (!seg) return;
     seg.querySelectorAll('.seg-btn').forEach((btn) => {

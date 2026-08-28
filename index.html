@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260828s" />
+  <link rel="stylesheet" href="./styles.css?v=20260828t" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -118,16 +118,10 @@
         </div>
       </div>
       <div class="form-row inline-row">
-        <label for="imgMode">图片嵌入方式</label>
-        <div class="seg" id="imgMode" role="radiogroup" aria-label="图片嵌入方式">
-          <button type="button" class="seg-btn" data-val="float" aria-pressed="true">贴入单元格</button>
-          <button type="button" class="seg-btn" data-val="image" aria-pressed="false">IMAGE 公式</button>
-        </div>
-      </div>
-      <div class="form-row inline-row">
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
       </div>
+      <p class="muted xs">图片以浮动方式嵌入单元格，WPS / Excel 各版本打开均可见（无需联网）。</p>
     </section>
 
     <section class="card card-collapsible">
@@ -230,6 +224,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20260828s"></script>
+  <script type="module" src="./app.js?v=20260828t"></script>
 </body>
 </html>
