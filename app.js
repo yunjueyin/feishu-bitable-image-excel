@@ -1265,6 +1265,11 @@ function formatText(v) {
 }
 
 // ---------- 导出 Excel ----------
+// 与 writeRow 的图片嵌入判定完全一致：可被 ExcelJS 成功嵌入才算「已导出图片」
+function isExportableImg(img) {
+  return !!(img && img.base64 && img.width && img.height);
+}
+
 function buildColumnPlan(fieldIds) {
   // 返回 [{fieldId, isAttachment, imgIndex}]，附件字段按 maxAttach 预留多列
   const plan = [];
@@ -1421,15 +1426,19 @@ async function exportExcel(options) {
         outRow++;
         // 打勾判定（功能4）：成功导出至少一张图片才标记「已导出」；纯文本导出（无图片列）整行视为已导出。
         // 空单元格 / 视频单元格（未成功导出任何图片）一律不打勾。
+        // 与 writeRow 复用同一判定 isExportableImg：只要该行成功嵌入了至少一张图片就打勾
         const hasExportedImage = attachFields.length === 0
           ? true
-          : attachFields.some((fid) => (cache[fid] || []).some((img) => img && img.base64));
+          : attachFields.some((fid) => (cache[fid] || []).some(isExportableImg));
         if (hasExportedImage) chunkWritten.push(chunk[k]);
       }
       // 流式逐块打勾：写完本块立即标记「已导出」（仅成功导出图片的行打勾；空/视频行不打勾）
-      if (markFieldId && chunkWritten.length) {
-        try { await markExportedRecords(markFieldId, chunkWritten); }
-        catch (e) { log('  本批标记失败：' + (e && e.message ? e.message : e), 'warn'); }
+      if (markFieldId) {
+        log('  标记检查 · 字段=' + (markFieldId || '无') + ' 本批可打勾=' + chunkWritten.length + '/' + chunk.length, 'info');
+        if (chunkWritten.length) {
+          try { await markExportedRecords(markFieldId, chunkWritten); }
+          catch (e) { log('  本批标记失败：' + (e && e.message ? e.message : e), 'warn'); }
+        }
       }
       processed += chunk.length;
       setProgress(Math.round(processed / total * 100));
