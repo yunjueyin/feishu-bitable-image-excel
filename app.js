@@ -1292,6 +1292,7 @@ async function exportExcel(options) {
 
   // 立即禁用导出/加载按钮，防止重复触发（交互：导出中禁用按钮防重复点击）
   state.exporting = true;
+  resetMarkQueue(); // 清空上次残留的打勾队列，开启新一轮后台并发打勾
   $('#btnExport').disabled = true;
   $('#btnExportZip').disabled = true;
   $('#btnLoad').disabled = true;
@@ -1430,13 +1431,10 @@ async function exportExcel(options) {
           : attachFields.some((fid) => (cache[fid] || []).length > 0);
         if (hasExportedImage) chunkWritten.push(chunk[k]);
       }
-      // 流式逐块打勾：写完本块立即标记「已导出」（仅成功导出图片的行打勾；空/视频行不打勾）
+      // 流式打勾：写完本块即把待打勾记录塞入全局并发池（后台 6 路并发打勾，不阻塞主流程）
       if (markFieldId) {
         log('  标记检查 · 字段=' + (markFieldId || '无') + ' 本批可打勾=' + chunkWritten.length + '/' + chunk.length, 'info');
-        if (chunkWritten.length) {
-          try { await markExportedRecords(markFieldId, chunkWritten); }
-          catch (e) { log('  本批标记失败：' + (e && e.message ? e.message : e), 'warn'); }
-        }
+        if (chunkWritten.length) enqueueMark(markFieldId, chunkWritten);
       }
       processed += chunk.length;
       setProgress(Math.round(processed / total * 100));
@@ -1449,6 +1447,11 @@ async function exportExcel(options) {
       if (!outRow) { finishExportUI(); return; } // 一行都没写，直接结束
     }
 
+    if (markFieldId) {
+      log('  等待后台打勾完成…', 'info');
+      await drainMarkQueue();
+      log('  已标记「已导出」完成（后台并发打勾）。', 'ok');
+    }
     log('正在写入文件…');
     const buf = await wb.xlsx.writeBuffer();
     const name = makeXlsxName();
@@ -1546,6 +1549,55 @@ async function markExportedRecords(fieldId, records) {
   log('  已标记本批「已导出」：' + okCount + ' / ' + n + ' 行', okCount === n ? 'ok' : 'warn');
 }
 
+// ---------- 全局打勾并发池（边加载边打勾，不阻塞主导出，受控并发）----------
+let _markQueue = [];
+let _markActive = 0;
+let _markFieldId = null;
+let _markWaiters = [];
+const MARK_CONC = 6; // 打勾是轻量布尔写入，且 setCellValue 不走取图共享限流，6 路安全
+
+function enqueueMark(fieldId, records) {
+  if (!fieldId || !records || !records.length) return;
+  _markFieldId = fieldId;
+  for (const r of records) _markQueue.push(r);
+  _pumpMark();
+}
+function _pumpMark() {
+  while (_markActive < MARK_CONC && _markQueue.length) {
+    _markActive++;
+    _markWorker().catch(() => {}).finally(() => { _markActive--; _pumpMark(); });
+  }
+  if (_markQueue.length === 0 && _markActive === 0) _wakeMarkWaiters();
+}
+async function _markWorker() {
+  while (_markQueue.length) {
+    if (state.aborted || state.confirmedCancel) break; // 取消即停止打勾
+    const rec = _markQueue.shift();
+    try {
+      await withRetry(() => state.table.setCellValue(_markFieldId, rec.recordId, true),
+        { retries: 3, timeoutMs: 6000, label: 'setCellValue(' + rec.recordId + ')', baseDelay: 400 });
+    } catch (e) {
+      log('  标记失败（' + (rec.recordId || '') + '）：' + e.message, 'warn');
+    }
+  }
+}
+function _wakeMarkWaiters() {
+  const ws = _markWaiters; _markWaiters = [];
+  for (const r of ws) r();
+}
+// 等待后台打勾全部完成（导出收尾写文件前调用）；取消时直接收尾（已停止打勾，不等待剩余）
+function drainMarkQueue() {
+  return new Promise((resolve) => {
+    if (_markQueue.length === 0 && _markActive === 0) return resolve();
+    if (state.aborted || state.confirmedCancel) { _markQueue = []; return resolve(); }
+    _markWaiters.push(resolve);
+  });
+}
+function resetMarkQueue() {
+  _markQueue = []; _markActive = 0; _markFieldId = null; _markWaiters = [];
+}
+
+
 // 生成「导出后标记」下拉（复选框字段 + 新建选项）
 function renderMarkOptions(selectedId) {
   const sel = $('#markField');
@@ -1595,6 +1647,7 @@ async function exportZip(options) {
 
   // 立即禁用导出/加载按钮，防止重复触发（交互：导出中禁用按钮防重复点击）
   state.exporting = true;
+  resetMarkQueue(); // 清空上次残留的打勾队列，开启新一轮后台并发打勾
   $('#btnExport').disabled = true;
   $('#btnExportZip').disabled = true;
   $('#btnLoad').disabled = true;
@@ -1690,14 +1743,11 @@ async function exportZip(options) {
           }
         }
       }
-      // 流式逐块打勾：写完本块立即标记「已导出」（图片全空行不在 zipWrittenRecs，不打勾）
-      if (markFieldId && chunkWritten.length) {
-        try { await markExportedRecords(markFieldId, chunkWritten); }
-        catch (e) { log('  本批标记失败：' + (e && e.message ? e.message : e), 'warn'); }
-      }
+      // 流式打勾：写完本块即把待打勾记录塞入全局并发池（后台 6 路并发打勾，不阻塞主流程）
+      if (markFieldId && chunkWritten.length) enqueueMark(markFieldId, chunkWritten);
       processed += chunk.length;
       setProgress(Math.round(processed / total * 100));
-      setProgressCount(processed + ' / ' + total + ' 行 · ' + fileCount + ' 张图' + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+      setProgressCount(processed + ' / ' + total + ' 行 · ' + fileCount + ' 张图片' + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
     }
 
     if (state.aborted || state.confirmedCancel) {
@@ -1705,6 +1755,11 @@ async function exportZip(options) {
       if (!fileCount) { finishExportUI(); return; } // 一张都没写，直接结束
     }
 
+    if (markFieldId) {
+      log('  等待后台打勾完成…', 'info');
+      await drainMarkQueue();
+      log('  已标记「已导出」完成（后台并发打勾）。', 'ok');
+    }
     log('正在打包 ZIP（共 ' + fileCount + ' 张图片）…');
     // 图片本身已压缩，STORE（不重压缩）显著快于默认 DEFLATE，且体积几乎不变（打包提速）
     const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
