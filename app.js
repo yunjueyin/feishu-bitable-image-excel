@@ -1265,11 +1265,6 @@ function formatText(v) {
 }
 
 // ---------- 导出 Excel ----------
-// 与 writeRow 的图片嵌入判定完全一致：可被 ExcelJS 成功嵌入才算「已导出图片」
-function isExportableImg(img) {
-  return !!(img && img.base64 && img.width && img.height);
-}
-
 function buildColumnPlan(fieldIds) {
   // 返回 [{fieldId, isAttachment, imgIndex}]，附件字段按 maxAttach 预留多列
   const plan = [];
@@ -1426,10 +1421,13 @@ async function exportExcel(options) {
         outRow++;
         // 打勾判定（功能4）：成功导出至少一张图片才标记「已导出」；纯文本导出（无图片列）整行视为已导出。
         // 空单元格 / 视频单元格（未成功导出任何图片）一律不打勾。
-        // 与 writeRow 复用同一判定 isExportableImg：只要该行成功嵌入了至少一张图片就打勾
+        // 打勾判定：只要该行任一图片字段含「有图单元格」（非空图片数组）即视为应打勾；
+        // 空单元格/视频在 fetchCellImages 里 return []（长度0）被天然排除 → 不打勾。
+        // 与 z 版「图片行打勾」一致，且修复 z 版「视频行误打勾」；不要求取图必须成功，
+        // 避免偶发 CORS/限流导致 [null,null] 被误判为无图而漏打勾。
         const hasExportedImage = attachFields.length === 0
           ? true
-          : attachFields.some((fid) => (cache[fid] || []).some(isExportableImg));
+          : attachFields.some((fid) => (cache[fid] || []).length > 0);
         if (hasExportedImage) chunkWritten.push(chunk[k]);
       }
       // 流式逐块打勾：写完本块立即标记「已导出」（仅成功导出图片的行打勾；空/视频行不打勾）
