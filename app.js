@@ -1472,7 +1472,7 @@ async function exportExcel(options) {
       log('  已标记「已导出」完成（后台并发打勾）。', 'ok');
     }
     log('正在写入文件…');
-    const buf = await wb.xlsx.writeBuffer();
+    const buf = await wb.xlsx.writeBuffer({ compression: 'STORE' }); // STORE: 不对图片数据二次压缩（jpg/png 已压缩，DEFLATE 几乎不减体积却巨耗 CPU），writeBuffer 极快、主线程不卡；不降图片分辨率
     const name = makeXlsxName();
     triggerDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     setProgress(100);
