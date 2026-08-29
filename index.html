@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260828z10" />
+  <link rel="stylesheet" href="./styles.css?v=20260829z1" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -77,6 +77,7 @@
         <button id="btnCancel" class="mini-cancel hidden" title="取消导出" aria-label="取消导出">取消</button>
       </div>
       <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      <div id="liveThumbs" class="live-thumbs"></div>
     </div>
 
     <section class="card">
@@ -146,6 +147,17 @@
       <p class="muted xs center">先「加载数据」再「导出」；未加载时导出按钮不可用。</p>
     </section>
 
+    <section class="card done-card hidden" id="doneCard">
+      <div class="card-head">
+        <span class="card-title"><span class="ico-tile t-green"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-check"/></svg></span>导出完成</span>
+        <button class="icon-btn" id="btnCloseDone" type="button" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
+      </div>
+      <div id="doneBody" class="done-body"></div>
+      <div class="done-actions">
+        <button type="button" class="link" id="btnCopyDone">复制导出信息</button>
+      </div>
+    </section>
+
     <section class="card log-card">
       <div class="card-head clickable" id="logToggle">
         <span class="card-title"><span class="ico-tile t-blue"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-list"/></svg></span>运行日志</span>
@@ -164,8 +176,8 @@
       <p class="cancel-title">正在取消…</p>
       <p class="muted xs">已停止取图与写入，已导出进度会保留。</p>
       <div class="cancel-actions">
-        <button id="btnResumeExport" class="btn btn-primary" type="button"><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg></span>继续导出</button>
-        <button id="btnForceCancel" class="btn btn-soft" type="button">确认取消</button>
+        <button id="btnResumeExport" class="btn btn-primary" type="button"><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg></span>恢复导出</button>
+        <button id="btnForceCancel" class="btn btn-soft" type="button">终止并保留</button>
       </div>
     </div>
   </div>
@@ -227,15 +239,16 @@
     </div>
   </div>
 
-  <!-- 成功 toast（UI2 / 交互5） -->
+  <!-- 通用 toast（成功 / 失败，可手动关闭） -->
   <div id="toast" class="toast hidden" role="status" aria-live="polite">
-    <div class="toast-icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-check"/></svg></div>
+    <div class="toast-icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" id="toastIconSvg"><use id="toastUse" href="#icon-check"/></svg></div>
     <div class="toast-body">
       <div id="toastTitle" class="toast-title"></div>
       <div id="toastMsg" class="toast-msg"></div>
     </div>
+    <button id="toastClose" class="toast-close" type="button" aria-label="关闭" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
   </div>
 
-  <script type="module" src="./app.js?v=20260828z10"></script>
+  <script type="module" src="./app.js?v=20260829z1"></script>
 </body>
 </html>
