@@ -298,7 +298,7 @@ function estimateExport() {
 
 // ---------- 分块取图（功能6：降内存峰值）----------
 // 仅对传入的 records 取图，返回与 records 对齐的 imgData；尊重取消标志。
-async function fetchImagesForRecords(records, attachFieldIds, onProgress, onImage) {
+async function fetchImagesForRecords(records, attachFieldIds, onProgress) {
   const out = new Array(records.length);
   let cursor = 0;
   let done = 0;
@@ -312,7 +312,6 @@ async function fetchImagesForRecords(records, attachFieldIds, onProgress, onImag
       await Promise.all(attachFieldIds.map((fid) =>
         fetchCellImages(fid, rec.recordId, rec.fields ? rec.fields[fid] : undefined).then((imgs) => {
           cache[fid] = imgs;
-          if (onImage) for (const im of (imgs || [])) if (im && im.base64) onImage(im);
         })
       ));
       out[i] = cache;
@@ -1504,7 +1503,7 @@ async function exportExcel(options) {
         ? await fetchImagesForRecords(chunk, attachFields, (d) => {
             setProgress(Math.round((processed + d) / total * 100));
             setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
-          }, appendLiveThumb)
+          })
         : chunk.map(() => ({}));
       const chunkWritten = []; // 本块实际写出 Excel 且命中打勾的行（仅成功导出图片的行）
       for (let k = 0; k < chunk.length; k++) {
@@ -1874,7 +1873,7 @@ async function exportZip(options) {
         ? await fetchImagesForRecords(chunk, attachFields.map((f) => f.id), (d) => {
             setProgress(Math.round((processed + d) / total * 100));
             setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
-          }, appendLiveThumb)
+          })
         : chunk.map(() => ({}));
       const chunkWritten = []; // 本块实际写入 ZIP 的记录（排除图片全空行）
       for (let k = 0; k < chunk.length; k++) {
