@@ -569,6 +569,9 @@ body {
 }
 .btn-soft:not(:disabled):hover { background: var(--bg-2); border-color: var(--border-strong); transform: translateY(-1px); }
 .btn-soft.sm { padding: 8px 14px; font-size: 13px; align-self: flex-start; }
+/* 重试按钮：常驻可见；有失败项时点亮（蓝描边+微高亮），无失败项时由 .btn:disabled 灰掉不可点 */
+#btnRetryFailed:not(:disabled) { border-color: var(--blue); color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+#btnRetryFailed:not(:disabled):hover { background: var(--bg-2); transform: translateY(-1px); }
 .btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .actions .btn { width: 100%; }
 

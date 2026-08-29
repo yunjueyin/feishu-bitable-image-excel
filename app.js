@@ -263,9 +263,10 @@ function applySettings() {
 }
 
 // ---------- 有效记录集（功能4：仅导出未标记行）----------
-function getEffectiveRecords() {
+function getEffectiveRecords({ ignoreOnlyUnmarked = false } = {}) {
   const markSel = $('#markField') ? $('#markField').value : '';
-  const onlyUnmarked = $('#onlyUnmarked') ? $('#onlyUnmarked').checked : false;
+  // retry 模式下强制忽略「仅导出未标记行」，导出全量并保持原表顺序，保证补齐后的文件完整且顺序不变
+  const onlyUnmarked = !ignoreOnlyUnmarked && ($('#onlyUnmarked') ? $('#onlyUnmarked').checked : false);
   let recs = state.records;
   if (onlyUnmarked && markSel && markSel !== '__create__') {
     recs = recs.filter((r) => {
@@ -967,7 +968,7 @@ async function thumbToExcelImage(item) {
   // http(s) URL：fetch 取像素（飞书部分版本缩略图返回下载链接而非 base64）
   if (/^https?:\/\//i.test(s)) {
     try {
-      const resp = await fetchWithTimeout(s, 8000);
+      const resp = await fetchImageBytesWithRetry(s, { retries: 3, timeoutMs: 8000, baseDelay: 500, label: '缩略图http' });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const r = await blobToImageResult(await resp.blob());
       state.stat.thumb++;
@@ -1096,6 +1097,22 @@ function fetchWithTimeout(url, ms) {
   return fetch(url, { signal: ctrl.signal, mode: 'cors' }).finally(() => clearTimeout(t));
 }
 
+// 带超时 + 自动退避重试的字节下载（第2点A）：解决「网络差时取图失败、导出缺图」的根因。
+// 此前真正下载图片字节是零重试，网络一抖即静默留空；这里复用 withRetry 的指数退避
+// （命中飞书频控按 x-ogw-ratelimit-reset 头退避），并在每次重试前检查取消标志。
+// 仅当所有重试耗尽仍失败，才由调用方把该图计入 failPairs。
+async function fetchImageBytesWithRetry(url, { retries = 3, timeoutMs = 8000, baseDelay = 500, label = 'img' } = {}) {
+  if (state.aborted) throw new Error('aborted');
+  return withRetry(
+    async () => {
+      const resp = await fetchWithTimeout(url, timeoutMs);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp;
+    },
+    { retries, timeoutMs, label: label + '(下载)', baseDelay }
+  );
+}
+
 // 抓取一个附件字段单元格的全部图片：
 //  - 缩略图模式（默认·最快）：直接取飞书缩略图 base64，不跨域、不需要任何代理、不逐个联网
 //  - 高清原图模式：本地直连飞书附件 URL（不借助代理），失败再回退缩略图
@@ -1150,7 +1167,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
         try {
           const r = await thumbLimit(() => withRetry(
             async () => state.table.getCellThumbnailUrls(needTokens, fieldId, recordId, qq),
-            { retries: 1, timeoutMs: 8000, label: 'getCellThumbnailUrls(q' + qq + ')', baseDelay: 300 }
+            { retries: 3, timeoutMs: 8000, label: 'getCellThumbnailUrls(q' + qq + ')', baseDelay: 400 }
           ));
           if (r && r.length) { thumbs = r; break; }
           else log('  缩略图质量 ' + qq + ' 返回空（tokens=' + needTokens.length + '）', 'warn');
@@ -1187,7 +1204,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
         const missTokens = stillMissing.map((i) => tokens[i]);
         urls = await attachLimit(() => withRetry(
           () => state.table.getCellAttachmentUrls(missTokens, fieldId, recordId),
-          { retries: 1, timeoutMs: 8000, label: 'getCellAttachmentUrls', baseDelay: 500 }
+          { retries: 3, timeoutMs: 8000, label: 'getCellAttachmentUrls', baseDelay: 500 }
         ));
       } catch (e) { /* 兜底失败，进入下方空图判断 */ }
       if (urls && urls.length) {
@@ -1195,7 +1212,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           const u = urls[k];
           if (!u) return;
           try {
-            const resp = await fetchWithTimeout(u, 5000);
+            const resp = await fetchImageBytesWithRetry(u, { retries: 3, timeoutMs: 8000, baseDelay: 500, label: '原图' });
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             let im;
             if (q === 'orig') {
@@ -1321,11 +1338,12 @@ async function exportExcel(options) {
     state.fetchBytes = 0;
     state.failPairs = new Set();
     state.failRows = new Set();
+    updateRetryButton(); // 导出中先把重试按钮置灰（防误触，结束后按结果点亮/灰掉）
 
     showCancel(); showProgress(); setProgress(0);
     log('开始生成 Excel…');
 
-    const recs = getEffectiveRecords(); // 功能4：仅导出未标记行
+    const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行（retry 模式导出全量保序）
     const total = recs.length;
     if (!total) { log('没有可导出的记录（所选「仅导出未标记行」下已全部标记）。', 'warn'); finishExportUI(); return; }
 
@@ -1392,10 +1410,11 @@ async function exportExcel(options) {
     const writtenRecs = [];    // 实际写出 Excel 的记录（用于「已导出」标记，排除仅图片列且全空的行）
 
     // 功能6：分块取图→写表→释放，避免全量 base64 驻留内存导致 OOM
-    const CHUNK = 50;
+    const CHUNK = 10;
     let processed = 0;
     // 解析标记字段（若选「新建」则在此创建并等索引生效，仅执行一次，避免逐块重复建字段）
-    const markFieldId = !state.retryMode ? await resolveMarkField() : null;
+    // retry 模式也解析并打勾：让本次补回的成功行在飞书标记「已导出」（幂等，不影响顺序）
+    const markFieldId = await resolveMarkField();
     for (let start = 0; start < total; start += CHUNK) {
       if (state.confirmedCancel) break; // 已确认取消：跳出并保留已写入进度
       if (state.aborted) { // 用户请求取消（未确认）→ 显示浮层等待「继续 / 确认取消」
@@ -1467,6 +1486,11 @@ async function exportExcel(options) {
       log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
     }
     showToast('Excel 导出完成' + partialTag, name + '（' + outRow + ' / ' + total + ' 行 · ' + humanSize(fileSize) + ' · 图片 原图' + state.stat.orig + '/缩略图' + state.stat.thumb + '）');
+    // 取图失败提示：明确告知用户可点「仅重试失败项」按钮补齐，避免「缺图不知情」
+    if (state.fetchStat.fail > 0) {
+      log('取图失败 ' + state.fetchStat.fail + ' 张（已汇总到「仅重试失败项」按钮，可点它补齐缺失图片）。', 'warn');
+      showToast('导出完成，但有 ' + state.fetchStat.fail + ' 张图取图失败', '点「仅重试失败项（' + state.failPairs.size + '）」补齐缺失图片');
+    }
     setProgress(100);
   } catch (e) {
     log('导出异常中断：' + (e && e.message ? e.message : e), 'err');
@@ -1557,7 +1581,7 @@ let _markWaiters = [];
 let _markBatchSupported = null; // null=未定, true=用 setRecords 批量, false=降级单格
 let _markProbing = false;
 const MARK_CONC = 12; // 打勾并发 worker 数；setCellValue 不走取图共享限流(独立API)
-const MARK_BATCH = 100; // 批量写每批行数（setRecords 上限5000，底层 batch_update 限流 50/s，100 安全）
+const MARK_BATCH = 10; // 批量写每批行数（setRecords 上限5000，底层 batch_update 限流 50/s）；调小到 10 使飞书「已导出」勾每约 10 行即出现
 
 function enqueueMark(fieldId, records) {
   if (!fieldId || !records || !records.length) return;
@@ -1716,12 +1740,13 @@ async function exportZip(options) {
     state.fetchBytes = 0;
     state.failPairs = new Set();
     state.failRows = new Set();
+    updateRetryButton(); // 导出中先把重试按钮置灰（防误触，结束后按结果点亮/灰掉）
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
 
     showCancel(); showProgress(); setProgress(0);
     log('开始生成图片 ZIP…');
 
-    const recs = getEffectiveRecords(); // 功能4：仅导出未标记行
+    const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行（retry 模式导出全量保序）
     const total = recs.length;
     if (!total) { log('没有可导出的记录（所选「仅导出未标记行」下已全部标记）。', 'warn'); finishExportUI(); return; }
 
@@ -1743,10 +1768,11 @@ async function exportZip(options) {
     let skippedEmptyRows = 0;
     const zipWrittenRecs = []; // 实际写入 ZIP 的记录（用于「已导出」标记，排除图片全空的行）
     // 功能6：分块取图→写 ZIP→释放，降低内存峰值
-    const CHUNK = 50;
+    const CHUNK = 10;
     let processed = 0;
     let fileCount = 0;
-    const markFieldId = !state.retryMode ? await resolveMarkField() : null;
+    // retry 模式也解析并打勾：让本次补回的成功行在飞书标记「已导出」（幂等，不影响顺序）
+    const markFieldId = await resolveMarkField();
     for (let start = 0; start < total; start += CHUNK) {
       if (state.confirmedCancel) break; // 已确认取消：跳出并保留已写入进度
       if (state.aborted) { // 用户请求取消（未确认）→ 显示浮层等待「继续 / 确认取消」
@@ -1814,6 +1840,11 @@ async function exportZip(options) {
       log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
     }
     showToast('ZIP 导出完成' + partialTag, name + '（' + fileCount + ' 张图片 · ' + humanSize(fileSize) + '）');
+    // 取图失败提示：明确告知用户可点「仅重试失败项」按钮补齐
+    if (state.fetchStat.fail > 0) {
+      log('取图失败 ' + state.fetchStat.fail + ' 张（已汇总到「仅重试失败项」按钮，可点它补齐缺失图片）。', 'warn');
+      showToast('导出完成，但有 ' + state.fetchStat.fail + ' 张图取图失败', '点「仅重试失败项（' + state.failPairs.size + '）」补齐缺失图片');
+    }
     setProgress(100);
   } catch (e) {
     log('ZIP 导出异常中断：' + (e && e.message ? e.message : e), 'err');
@@ -1941,16 +1972,19 @@ function retryFailed() {
   if (state.lastExport === 'zip') exportZip({ skipConfirm: true });
   else exportExcel({ skipConfirm: true });
 }
-// 根据失败项刷新「仅重试失败项」按钮
+// 根据失败项刷新「仅重试失败项」按钮：常驻可见，永不隐藏；仅用 disabled 表达状态
+// （有失败项→点亮可点并显示数量；无失败项→灰掉不可点，复用 .btn:disabled 灰态）
 function updateRetryButton() {
   const b = $('#btnRetryFailed');
   if (!b) return;
   const n = state.failPairs ? state.failPairs.size : 0;
+  b.classList.remove('hidden'); // 按钮始终可见
   if (n > 0) {
-    b.classList.remove('hidden');
+    b.disabled = false;
     b.textContent = '仅重试失败项（' + n + '）';
   } else {
-    b.classList.add('hidden');
+    b.disabled = true;
+    b.textContent = '仅重试失败项';
   }
 }
 
@@ -2026,6 +2060,7 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#btnSchemeDefault').addEventListener('click', () => { const n = $('#schemeSelect').value; if (n) setDefaultScheme(n); else showToast('请选择方案', '先在下拉选择要设为默认的方案'); });
   // 仅重试失败项
   $('#btnRetryFailed').addEventListener('click', retryFailed);
+  updateRetryButton(); // 初始化重试按钮为常驻可见 + 灰态（无失败时不可点）
   // 日志折叠
   $('#logToggle').addEventListener('click', () => {
     const panel = $('#logPanel');
