@@ -1410,7 +1410,7 @@ async function exportExcel(options) {
     const writtenRecs = [];    // 实际写出 Excel 的记录（用于「已导出」标记，排除仅图片列且全空的行）
 
     // 功能6：分块取图→写表→释放，避免全量 base64 驻留内存导致 OOM
-    const CHUNK = 10;
+    const CHUNK = 50; // 取图每50行打勾一次（恢复此前批量节奏：每取满50行图触发一次打勾；与取图限流 sdkGate 4QPS/并发4 互不冲突）
     let processed = 0;
     // 解析标记字段（若选「新建」则在此创建并等索引生效，仅执行一次，避免逐块重复建字段）
     // retry 模式也解析并打勾：让本次补回的成功行在飞书标记「已导出」（幂等，不影响顺序）
@@ -1768,7 +1768,7 @@ async function exportZip(options) {
     let skippedEmptyRows = 0;
     const zipWrittenRecs = []; // 实际写入 ZIP 的记录（用于「已导出」标记，排除图片全空的行）
     // 功能6：分块取图→写 ZIP→释放，降低内存峰值
-    const CHUNK = 10;
+    const CHUNK = 50; // 取图每50行打勾一次（恢复此前批量节奏：每取满50行图触发一次打勾；与取图限流 sdkGate 4QPS/并发4 互不冲突）
     let processed = 0;
     let fileCount = 0;
     // retry 模式也解析并打勾：让本次补回的成功行在飞书标记「已导出」（幂等，不影响顺序）
