@@ -1580,8 +1580,9 @@ let _markFieldId = null;
 let _markWaiters = [];
 let _markBatchSupported = null; // null=未定, true=用 setRecords 批量, false=降级单格
 let _markProbing = false;
-const MARK_CONC = 12; // 打勾并发 worker 数；setCellValue 不走取图共享限流(独立API)
+const MARK_CONC = 2; // 打勾并发 worker 数（原12）：温和后台细流，避免占满飞书每主机连接池/写配额而阻塞同主机取图预取；与分辨率无关
 const MARK_BATCH = 10; // 批量写每批行数（setRecords 上限5000，底层 batch_update 限流 50/s）；调小到 10 使飞书「已导出」勾每约 10 行即出现
+const MARK_GAP = 150; // 每批打勾后歇息 ms，周期性让出连接/配额给取图，避免打勾突发堵死取链接请求
 
 function enqueueMark(fieldId, records) {
   if (!fieldId || !records || !records.length) return;
@@ -1641,6 +1642,7 @@ async function _markWorker() {
         log('  标记失败（' + (rec.recordId || '') + '）：' + e.message, 'warn');
       }
     }
+    await sleep(MARK_GAP); // 每批打勾后歇息，周期性让出连接/配额给同主机取图，避免打勾突发堵死取链接请求
   }
 }
 function _wakeMarkWaiters() {
