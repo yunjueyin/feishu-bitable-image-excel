@@ -82,7 +82,7 @@ function humanSize(n) {
 }
 // 累计已取图字节（base64 长度 × 3/4 ≈ 解码后字节数），用于实时体积预估
 function addImgBytes(img) {
-  if (img && img.bytes) state.fetchBytes = (state.fetchBytes || 0) + img.bytes.length;
+  if (img && img.base64) state.fetchBytes = (state.fetchBytes || 0) + Math.ceil(img.base64.length * 3 / 4);
 }
 // 带超时的 Promise 包装：超过 ms 即 reject，避免飞书 SDK 调用挂起导致整批导出永久卡死
 function withTimeout(promise, ms, label) {
@@ -451,7 +451,7 @@ async function loadPreviewThumbs() {
           const im = await thumbToExcelImage(r && r[0]);
           if (im && cont) {
             const img = document.createElement('img');
-            img.src = bytesToDataUrl(im.bytes, 'image/' + im.extension);
+            img.src = 'data:' + im.extension + ';base64,' + im.base64;
             img.className = 'pv-thumb';
             img.alt = f.name;
             cont.appendChild(img);
@@ -856,101 +856,19 @@ function canvasToDataUrl(bmp, type) {
   return c.toDataURL(type);
 }
 
-// ---------- 字节版图片处理（去 base64 冗余：降内存峰值 / 省编解码 / 防 OOM）----------
-function b64ToBytes(b64) {
-  const clean = String(b64).replace(/^data:[^;]+;base64,/, '');
-  const bin = atob(clean);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-function dataUrlToBytes(dataUrl) {
-  const m = String(dataUrl).match(/^data:(image\/[\w+.-]+);base64,(.*)$/);
-  const b64 = m ? m[2] : String(dataUrl).split(',')[1];
-  return b64ToBytes(b64);
-}
-// 字节 → data URL（仅供给必须吃 dataUrl 的 canvas 缩放函数；按需构造，不常驻内存）
-function bytesToDataUrl(bytes, mime) {
-  let bin = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return 'data:' + (mime || 'image/png') + ';base64,' + btoa(bin);
-}
-// 从字节头解析宽高（PNG/GIF/BMP/JPEG），无需解码整张像素
-function parseDimsFromBytes(b) {
-  try {
-    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
-      const w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
-      const h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
-      if (w > 0 && h > 0) return { w, h };
-    }
-    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) {
-      const w = b[6] | (b[7] << 8), h = b[8] | (b[9] << 8);
-      if (w > 0 && h > 0) return { w, h };
-    }
-    if (b[0] === 0x42 && b[1] === 0x4d) {
-      const w = b[18] | (b[19] << 8) | (b[20] << 16) | (b[21] << 24);
-      const h = b[22] | (b[23] << 8) | (b[24] << 16) | (b[25] << 24);
-      if (w > 0 && h > 0) return { w, h };
-    }
-    if (b[0] === 0xff && b[1] === 0xd8) {
-      let i = 2;
-      while (i < b.length - 9) {
-        if (b[i] !== 0xff) { i++; continue; }
-        const m = b[i + 1];
-        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
-          const h = (b[i + 5] << 8) | b[i + 6], w = (b[i + 7] << 8) | b[i + 8];
-          if (w > 0 && h > 0) return { w, h };
-        }
-        const len = (b[i + 2] << 8) | b[i + 3]; i += 2 + len;
-      }
-    }
-  } catch (e) { /* 解析失败回退 blob URL */ }
-  return null;
-}
-function imageSizeFromBytes(bytes, mime) {
-  const h = parseDimsFromBytes(bytes);
-  if (h) return h;
-  // 头解析失败（如 WebP/HEIC 等）：回退用 blob URL + Image 解码一次
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(new Blob([bytes], { type: mime || 'image/png' }));
-    const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); resolve({ w: img.naturalWidth || 150, h: img.naturalHeight || 120 }); };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-    img.src = url;
-  });
-}
-// 核心：把原始字节封装为 Excel/ZIP 可直接使用的图片对象 {bytes, extension, width, height}
-async function finalizeExcelImageBytes(bytes, forceExt, mime) {
-  let ext = forceExt || mimeToExt(mime || 'image/png');
-  if (!SUPPORTED_IMG.includes(ext)) {
-    // 不支持的格式：用 canvas 重新编码为 png
-    const dataUrl = bytesToDataUrl(bytes, mime);
-    const bmp = await blobToBitmap(dataUrl);
-    const png = canvasToDataUrl(bmp, 'image/png');
-    bytes = dataUrlToBytes(png);
-    ext = 'png';
-  }
-  const dims = await imageSizeFromBytes(bytes, mime || ('image/' + ext));
-  if (!dims) return null;
-  return { bytes, extension: ext, width: dims.w, height: dims.h };
-}
-
-// 将 Blob 转成 Excel 可直接使用的 {bytes, extension, width, height}（纯转换，不计数）
+// 将 Blob 转成 Excel 可直接使用的 {base64, extension, width, height}（纯转换，不计数）
 async function blobToImageResult(blob) {
   const mime = blob.type || 'image/png';
   let ext = mimeToExt(mime);
-  let bytes;
+  let dataUrl;
   if (SUPPORTED_IMG.includes(ext)) {
-    bytes = new Uint8Array(await blob.arrayBuffer());
+    dataUrl = await blobToDataUrl(blob);
   } else {
     const bmp = await createImageBitmap(blob);
-    bytes = dataUrlToBytes(canvasToDataUrl(bmp, 'image/png'));
+    dataUrl = canvasToDataUrl(bmp, 'image/png');
     ext = 'png';
   }
-  return finalizeExcelImageBytes(bytes, ext, mime);
+  return finalizeExcelImage(dataUrl, ext);
 }
 // 原图：Blob → Excel 图片（计 orig）
 async function blobToExcelImage(blob) {
@@ -972,7 +890,7 @@ async function blobToExcelImageResized(blob, targetW) {
   }
   const resized = await resizeImage(dataUrl, targetW, 0.85);
   state.stat.orig++;
-  return finalizeExcelImageBytes(dataUrlToBytes(resized), null, 'image/jpeg');
+  return finalizeExcelImage(resized, null);
 }
 
 // 缩略图返回可能是：base64 字符串 / data URL / http(s) URL / 对象({url|thumbnail|data|base64})
@@ -1015,16 +933,16 @@ async function resizeToMaxSide(dataUrl, maxSide, quality) {
   });
 }
 async function capThumbnail(obj) {
-  if (!obj || !obj.bytes || !obj.width || !obj.height) return obj;
+  if (!obj || !obj.base64 || !obj.width || !obj.height) return obj;
   const maxSide = Math.max(obj.width, obj.height);
   if (maxSide <= THUMB_CAP) return obj; // 已在阈值内，原样返回
   if (!_thumbCappedLogged) {
     _thumbCappedLogged = true;
     log('检测到缩略图超过 ' + THUMB_CAP + 'px（实际约 ' + maxSide + 'px），已自动缩放至 ' + THUMB_CAP + 'px 兜底。', 'warn');
   }
-  const dataUrl = bytesToDataUrl(obj.bytes, 'image/' + obj.extension);
+  const dataUrl = 'data:' + obj.extension + ';base64,' + obj.base64;
   const r = await resizeToMaxSide(dataUrl, THUMB_CAP, 0.85);
-  return finalizeExcelImageBytes(dataUrlToBytes(r), null, 'image/jpeg');
+  return finalizeExcelImage(r, null);
 }
 
 // 原图超大封顶：高清原图模式保留原始分辨率，但超过 ORIG_CAP 的超大图（如扫描件/全景图）
@@ -1032,16 +950,16 @@ async function capThumbnail(obj) {
 const ORIG_CAP = 4096;
 let _origCappedLogged = false;
 async function capMaxSide(obj, cap) {
-  if (!obj || !obj.bytes || !obj.width || !obj.height) return obj;
+  if (!obj || !obj.base64 || !obj.width || !obj.height) return obj;
   const maxSide = Math.max(obj.width, obj.height);
   if (maxSide <= cap) return obj; // 已在阈值内，原样返回省 CPU
   if (!_origCappedLogged) {
     _origCappedLogged = true;
     log('检测到原图超过 ' + cap + 'px（实际约 ' + maxSide + 'px），已自动封顶至 ' + cap + 'px 防内存爆。', 'warn');
   }
-  const dataUrl = bytesToDataUrl(obj.bytes, 'image/' + obj.extension);
+  const dataUrl = 'data:' + obj.extension + ';base64,' + obj.base64;
   const r = await resizeToMaxSide(dataUrl, cap, 0.9);
-  return finalizeExcelImageBytes(dataUrlToBytes(r), null, 'image/jpeg');
+  return finalizeExcelImage(r, null);
 }
 
 async function thumbToExcelImage(item) {
@@ -1065,16 +983,26 @@ async function thumbToExcelImage(item) {
   if (/^data:/i.test(raw)) raw = raw.split(',')[1];
   if (!raw) return null;
   const mime = detectMime(raw);
-  const bytes = b64ToBytes(raw);
+  const dataUrl = 'data:' + mime + ';base64,' + raw;
   state.stat.thumb++;
-  return capThumbnail(await finalizeExcelImageBytes(bytes, null, mime));
+  return capThumbnail(await finalizeExcelImage(dataUrl, null));
 }
 
 async function finalizeExcelImage(dataUrl, forceExt) {
-  // 薄包装：dataUrl → 字节 → 走字节版核心（供 canvas 缩放回退路径复用）
-  const m = String(dataUrl).match(/^data:(image\/[\w+.-]+);base64,(.*)$/);
+  const m = dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.*)$/);
   const mime = m ? m[1] : 'image/png';
-  return finalizeExcelImageBytes(dataUrlToBytes(dataUrl), forceExt, mime);
+  let b64 = m ? m[2] : dataUrl.split(',')[1];
+  let ext = forceExt || mimeToExt(mime);
+  if (!SUPPORTED_IMG.includes(ext)) {
+    // 不支持的格式，重新编码为 png
+    const bmp = await blobToBitmap(dataUrl);
+    dataUrl = canvasToDataUrl(bmp, 'image/png');
+    const m2 = dataUrl.match(/^data:(image\/png);base64,(.*)$/);
+    b64 = m2[2]; ext = 'png';
+  }
+  const dims = await imageSize(dataUrl);
+  if (!dims) return null; // 图坏/无法解码：返回 null，上层跳过，避免 ExcelJS addImage 读 undefined.width 崩溃
+  return { base64: b64, extension: ext, width: dims.w, height: dims.h };
 }
 
 function blobToBitmap(dataUrl) {
@@ -1454,11 +1382,11 @@ async function exportExcel(options) {
         if (c.isAttachment) {
           const imgs = attachCache[c.fieldId] || [];
           const img = imgs[c.imgIndex];
-          if (img && img.bytes && img.width && img.height) {
+          if (img && img.base64 && img.width && img.height) {
             const Wd = DISPLAY_W;
             const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
             try {
-              const imgId = wb.addImage({ buffer: img.bytes, extension: img.extension });
+              const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
               ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
             } catch (e) {
               log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
@@ -1484,22 +1412,9 @@ async function exportExcel(options) {
     // 功能6：分块取图→写表→释放，避免全量 base64 驻留内存导致 OOM
     const CHUNK = 10;
     let processed = 0;
-    // 档二：取图预取流水线——写第 N 块时后台预取第 N+1 块图，使取图 4QPS 在写行（CPU）期间不闲置；内存仅多驻留一块
-    const needFetch = attachFields.length > 0;
-    const fetchChunkImgs = (s) => {
-      const e = Math.min(s + CHUNK, total);
-      const c = recs.slice(s, e);
-      return needFetch
-        ? fetchImagesForRecords(c, attachFields, (d) => {
-            setProgress(Math.round((s + d) / total * 100));
-            setProgressCount((s + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
-          })
-        : c.map(() => ({}));
-    };
     // 解析标记字段（若选「新建」则在此创建并等索引生效，仅执行一次，避免逐块重复建字段）
     // retry 模式也解析并打勾：让本次补回的成功行在飞书标记「已导出」（幂等，不影响顺序）
     const markFieldId = await resolveMarkField();
-    let nextImgData = fetchChunkImgs(0); // 预取首块（与初始化并行）
     for (let start = 0; start < total; start += CHUNK) {
       if (state.confirmedCancel) break; // 已确认取消：跳出并保留已写入进度
       if (state.aborted) { // 用户请求取消（未确认）→ 显示浮层等待「继续 / 确认取消」
@@ -1507,11 +1422,14 @@ async function exportExcel(options) {
         hideCancelling();
         if (decision === 'cancel' || state.confirmedCancel) break;
       }
-      const imgData = await nextImgData; // 当前块图（已取完 / 正后台取）
-      const nextStart = start + CHUNK;
-      nextImgData = nextStart < total ? fetchChunkImgs(nextStart) : null; // 写当前块时预取下一块
       const end = Math.min(start + CHUNK, total);
       const chunk = recs.slice(start, end);
+      const imgData = attachFields.length
+        ? await fetchImagesForRecords(chunk, attachFields, (d) => {
+            setProgress(Math.round((processed + d) / total * 100));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+          })
+        : chunk.map(() => ({}));
       const chunkWritten = []; // 本块实际写出 Excel 且命中打勾的行（仅成功导出图片的行）
       for (let k = 0; k < chunk.length; k++) {
         const cache = imgData[k] || {};
@@ -1558,7 +1476,7 @@ async function exportExcel(options) {
     const name = makeXlsxName();
     triggerDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     setProgress(100);
-    const imgTip = '；图片以浮动方式嵌入单元格（字节内嵌、无需联网，WPS / Excel 各版本打开均可见）。';
+    const imgTip = '；图片以浮动方式嵌入单元格（base64 内嵌、无需联网，WPS / Excel 各版本打开均可见）。';
     const fileSize = buf.byteLength;
     const partialTag = (state.aborted || state.confirmedCancel) ? '（已取消，部分导出）' : '';
     log('导出完成' + partialTag + '：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + imgTip + '）', 'ok');
@@ -1853,21 +1771,8 @@ async function exportZip(options) {
     const CHUNK = 10;
     let processed = 0;
     let fileCount = 0;
-    // 档二：取图预取流水线（同 Excel 逻辑）
-    const needFetch = attachFields.length > 0;
-    const fetchChunkImgs = (s) => {
-      const e = Math.min(s + CHUNK, total);
-      const c = recs.slice(s, e);
-      return needFetch
-        ? fetchImagesForRecords(c, attachFields.map((f) => f.id), (d) => {
-            setProgress(Math.round((s + d) / total * 100));
-            setProgressCount((s + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
-          })
-        : c.map(() => ({}));
-    };
     // retry 模式也解析并打勾：让本次补回的成功行在飞书标记「已导出」（幂等，不影响顺序）
     const markFieldId = await resolveMarkField();
-    let nextImgData = fetchChunkImgs(0);
     for (let start = 0; start < total; start += CHUNK) {
       if (state.confirmedCancel) break; // 已确认取消：跳出并保留已写入进度
       if (state.aborted) { // 用户请求取消（未确认）→ 显示浮层等待「继续 / 确认取消」
@@ -1875,11 +1780,14 @@ async function exportZip(options) {
         hideCancelling();
         if (decision === 'cancel' || state.confirmedCancel) break;
       }
-      const imgData = await nextImgData;
-      const nextStart = start + CHUNK;
-      nextImgData = nextStart < total ? fetchChunkImgs(nextStart) : null;
       const end = Math.min(start + CHUNK, total);
       const chunk = recs.slice(start, end);
+      const imgData = attachFields.length
+        ? await fetchImagesForRecords(chunk, attachFields.map((f) => f.id), (d) => {
+            setProgress(Math.round((processed + d) / total * 100));
+            setProgressCount((processed + d) + ' / ' + total + ' 行取图 · 成功' + state.fetchStat.ok + ' 失败' + state.fetchStat.fail + ' 空' + state.fetchStat.empty + (state.fetchStat.skipped ? ' 跳过' + state.fetchStat.skipped : '') + ' 原图回退' + state.fetchStat.fallback + (state.fetchBytes ? ' · ' + humanSize(state.fetchBytes) : ''));
+          })
+        : chunk.map(() => ({}));
       const chunkWritten = []; // 本块实际写入 ZIP 的记录（排除图片全空行）
       for (let k = 0; k < chunk.length; k++) {
         const cache = imgData[k] || {};
@@ -1895,7 +1803,7 @@ async function exportZip(options) {
             const img = imgs[m];
             if (!img) continue;
             const fname = uniq(base + '__' + safe(f.name) + '_' + (m + 1) + '.' + img.extension);
-            zip.file(fname, img.bytes);
+            zip.file(fname, img.base64, { base64: true });
             fileCount++;
           }
         }
