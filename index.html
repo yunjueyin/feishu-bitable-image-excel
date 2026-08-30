@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260830i" />
+  <link rel="stylesheet" href="./styles.css?v=20260830j" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -264,6 +264,27 @@
     <button id="toastClose" class="toast-close" type="button" aria-label="关闭" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
   </div>
 
-  <script type="module" src="./app.js?v=20260830i"></script>
+  <!--
+    自破缓存加载器：每次打开都用新时间戳拉取 app.js，绕开飞书/CDN 对 app.js 的缓存。
+    好处：本 index.html 被加载过一次后，后续发新版无需再改插件 URL 尾巴，每次打开都是最新代码。
+    加载失败时会在状态栏直接显示原因，不会静默卡在"正在初始化…"。
+  -->
+  <script type="module">
+    (function () {
+      function fail(msg) {
+        var st = document.getElementById('statusText');
+        if (st) st.textContent = '主脚本加载失败：' + msg;
+        var s = document.getElementById('status');
+        if (s) s.className = 'status status-err';
+      }
+      try {
+        import('./app.js?v=' + Date.now()).catch(function (e) {
+          fail((e && e.message) ? e.message : String(e));
+        });
+      } catch (e) {
+        fail((e && e.message) ? e.message : String(e));
+      }
+    })();
+  </script>
 </body>
 </html>
