@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830r';
+const APP_VERSION = '20260830s';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -688,12 +688,15 @@ function setSeg(id, val) {
 // init() 中的调用也已改为对象参数写法（见下方 init 函数）。
 
 // ---------- 初始化 ----------
+// 初始化完成的兜底标记：看门狗据此判断是否真的卡死，避免把「正在加载」误报为无响应
+let bootInitDone = false;
 async function init() {
   log('[诊断] init() 开始');
   const okSdk = await loadSdk();
   if (!okSdk) {
     setStatus('未加载飞书 SDK（请检查网络 / CDN）', 'err');
     log('本插件需作为飞书多维表「自定义插件」打开。', 'err');
+    bootInitDone = true;
     return;
   }
   setStatus('飞书 SDK 已加载，读取数据表…', 'idle');
@@ -732,9 +735,11 @@ async function init() {
     applySettings(); // 恢复上次导出的常用设置（功能8）
     $('#btnLoad').disabled = false;
     log('[诊断] 初始化完成，可点击「加载数据」', 'ok');
+    bootInitDone = true;
   } catch (e) {
     setStatus('未在飞书多维表环境中，或无法获取当前表：' + e.message, 'err');
     log('若你在普通浏览器打开本页，这是正常的——请作为飞书自定义插件使用。', 'err');
+    bootInitDone = true;
   }
 }
 
@@ -2875,21 +2880,29 @@ function bootstrap() {
   // 速度优化：初始化与 ExcelJS 加载并行，先尽快进入可用状态
   function startApp() {
     setStatus('初始化开始…', 'idle');
-    init();
+    init().catch((e) => {
+      bootInitDone = true;
+      setStatus('插件初始化脚本异常：' + (e && e.message), 'err');
+      log('[诊断] init 异常：' + (e && e.stack ? e.stack : e), 'err');
+    });
     ensureExcelJS().then((ok) => {
       if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');
     });
     ensureJSZip(); // 后台预载，不阻塞
   }
   startApp(); // bootstrap 已由底部 readyState 守卫保证 DOM 就绪，直接启动
-  // 兜底看门狗：若 25 秒内状态仍卡在 idle，提示用户网络/SDK 无响应
+  // 兜底看门狗：仅当 init 真正未完成（且尚未给出 ok/err/warn 终态）时才提示，
+  // 不再用 status-idle 类判断——加载过程中的中间状态也曾用 idle，会导致慢环境误报。
   setTimeout(() => {
-    const statusEl = $('#status');
-    if (statusEl && statusEl.classList.contains('status-idle')) {
-      setStatus('初始化超时：飞书 SDK 或数据表接口无响应，请检查网络或关闭插件重试', 'warn');
-      log('[诊断] 初始化 watchdog 触发：25 秒内未完成', 'warn');
+    if (!bootInitDone) {
+      const statusEl = $('#status');
+      const cls = statusEl ? statusEl.className : '';
+      if (!/status-(ok|err|warn)/.test(cls)) {
+        setStatus('初始化超时：飞书 SDK 或数据表接口无响应，请检查网络或关闭插件重试', 'warn');
+        log('[诊断] 初始化 watchdog 触发：45 秒内未完成', 'warn');
+      }
     }
-  }, 25000);
+  }, 45000);
 }
 
 // 入口调度：DOM 已就绪则立即执行，否则等 DOMContentLoaded；
