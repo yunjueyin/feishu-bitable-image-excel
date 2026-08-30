@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830j';
+const APP_VERSION = '20260830k';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -82,12 +82,8 @@ function showProgress() { const b = $('#progressBox'); if (b) b.classList.remove
 function hideProgress() { const b = $('#progressBox'); if (b) b.classList.add('hidden'); }
 function setProgressCount(text) { const c = $('#progressCount'); if (c) c.textContent = text || ''; }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error((label || '操作') + ' 超时（' + ms + 'ms）')), ms))
-  ]);
-}
+// 注意：下方已存在 withTimeout 定义（带 clearTimeout 清理），此处切勿重复声明——
+// ES Module 顶层函数声明不可重复，重复会导致整个模块 SyntaxError、一行都不执行。
 // 人类可读体积（实时预估导出文件大小）
 function humanSize(n) {
   n = n || 0;
@@ -646,21 +642,10 @@ function setSeg(id, val) {
 
 // 带重试 + 超时的 SDK 调用：飞书 webview 内偶发「接口就绪前调用即失败」或「永不 resolve」，
 // 重试 + 单次超时能把这种挂起变成可捕获错误，方便定位卡在何处。
-async function withRetry(fn, label, times = 3, gap = 400, timeoutMs = 15000) {
-  let lastErr;
-  for (let i = 1; i <= times; i++) {
-    try {
-      const r = timeoutMs ? await withTimeout(fn(), timeoutMs, label) : await fn();
-      if (i > 1) log('[重试成功] ' + label + ' 第 ' + i + ' 次成功', 'ok');
-      return r;
-    } catch (e) {
-      lastErr = e;
-      log('[重试] ' + label + ' 第 ' + i + '/' + times + ' 次失败：' + e.message, 'warn');
-      if (i < times) await sleep(gap);
-    }
-  }
-  throw lastErr;
-}
+// 注意：上方第 146 行已存在 withRetry 定义（对象参数签名，内置频控退避）。
+// 此处原是早期调试时误加的重复声明（位置参数签名），ES Module 顶层函数不可重复声明，
+// 会导致整个模块 SyntaxError、一行都不执行。已删除，统一使用第 146 行版本；
+// init() 中的调用也已改为对象参数写法（见下方 init 函数）。
 
 // ---------- 初始化 ----------
 async function init() {
@@ -677,7 +662,7 @@ async function init() {
     // 列出全部数据表，支持用户切换
     try {
       setStatus('读取数据表列表…', 'idle');
-      const metas = await withRetry(() => state.bitable.base.getTableMetaList(), 'getTableMetaList');
+      const metas = await withRetry(() => state.bitable.base.getTableMetaList(), { label: 'getTableMetaList', timeoutMs: 15000 });
       state.tableMetas = Array.isArray(metas) ? metas : [];
     } catch (e) {
       log('获取表列表失败（将仅使用当前表）：' + e.message, 'warn');
@@ -687,11 +672,11 @@ async function init() {
         (state.tableMetas.map((m) => (m.name || m.id)).join('、') || '（空）'));
 
     setStatus('获取当前数据表…', 'idle');
-    const table = await withRetry(() => state.bitable.base.getActiveTable(), 'getActiveTable');
+    const table = await withRetry(() => state.bitable.base.getActiveTable(), { label: 'getActiveTable', timeoutMs: 15000 });
     state.table = table;
     state.tableId = (table && table.id) || '';
     setStatus('读取表名…', 'idle');
-    state.tableName = await withRetry(() => table.getName(), 'table.getName');
+    state.tableName = await withRetry(() => table.getName(), { label: 'table.getName', timeoutMs: 15000 });
     log('[诊断] 当前活跃表：id=' + state.tableId + ' 名称=' + state.tableName);
 
     // 兜底：即使 getTableMetaList 返回空/失败，也把活跃表作为唯一下拉项显示，
