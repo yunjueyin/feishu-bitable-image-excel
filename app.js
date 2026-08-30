@@ -8,6 +8,10 @@ const FIELD_TYPE_CHECKBOX = 7;
 const SUPPORTED_IMG = ['png', 'jpeg', 'gif', 'bmp'];
 const ImageQualityFallback = { Low: 120, Mid: 360, HIGH: 720, MAX: 1280 };
 const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质量，飞书服务端若支持则返回更大图
+// 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
+// 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
+// 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
+const APP_VERSION = '20260830e';
 
 // 飞书 SDK 1.0.2 实际并未导出 ImageQuality 枚举（已核对 dist 包），运行时 state.ImageQuality 恒为兜底常量。
 // 为兼容「未来 SDK 真导出该枚举且键名大小写不同（High/MAX 等）」的情况，这里做大小写容错解析：
@@ -437,9 +441,10 @@ function showDoneCard(info) {
   if (info.rowsText) rows.push(['导出行数', info.rowsText]);
   rows.push(['图片', '原图 ' + (info.orig || 0) + ' / 缩略图 ' + (info.thumb || 0) + '（共 ' + (info.imgCount || 0) + ' 张）']);
   rows.push(['文件大小', info.size || '—']);
+  rows.push(['插件版本', APP_VERSION]); // 自报：飞书实际跑的是哪一份代码，便于核对是否旧包/旧缓存
   if (info.fail) rows.push(['取图失败', info.fail + ' 张（可点「仅重试失败项」补齐）']);
   body.innerHTML = rows.map((r) => '<div class="done-row"><span class="done-k">' + escapeHtml(r[0]) + '</span><span class="done-v">' + escapeHtml(r[1]) + '</span></div>').join('');
-  let copy = '文件：' + (info.name || '') + (info.rowsText ? ('\n行数：' + info.rowsText) : '') + '\n图片：原图' + (info.orig || 0) + '/缩略图' + (info.thumb || 0) + '（共' + (info.imgCount || 0) + '张）\n大小：' + (info.size || '');
+  let copy = '文件：' + (info.name || '') + (info.rowsText ? ('\n行数：' + info.rowsText) : '') + '\n图片：原图' + (info.orig || 0) + '/缩略图' + (info.thumb || 0) + '（共' + (info.imgCount || 0) + '张）\n大小：' + (info.size || '') + '\n插件版本：' + APP_VERSION;
   if (info.fail) copy += '\n失败：' + info.fail + '张';
   card._copy = copy;
   card.classList.remove('hidden');
@@ -1485,6 +1490,7 @@ async function exportExcel(options) {
 
     hideDoneCard(); resetLiveThumbs(); // 新一轮导出：清掉上次的完成卡片与缩略图流
     showCancel(); showProgress(); setProgress(0);
+    log('[插件版本] ' + APP_VERSION + ' · 缓存命中计数=开 · yieldToMain=开 · imgQuality=' + state.imgQuality);
     log('开始生成 Excel…');
 
     const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行（retry 模式导出全量保序）
@@ -1941,6 +1947,7 @@ async function exportZip(options) {
 
     hideDoneCard(); resetLiveThumbs(); // 新一轮导出：清掉上次的完成卡片与缩略图流
     showCancel(); showProgress(); setProgress(0);
+    log('[插件版本] ' + APP_VERSION + ' · 缓存命中计数=开 · yieldToMain=开 · imgQuality=' + state.imgQuality);
     log('开始生成图片 ZIP…');
 
     const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行（retry 模式导出全量保序）
