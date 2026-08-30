@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260830o" />
+  <link rel="stylesheet" href="./styles.css?v=20260830p" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -29,7 +29,7 @@
     <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
     <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
     <symbol id="icon-table" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></symbol>
-    <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="M21 15l-5-5L5 21"/></symbol>
+    <symbol id="icon-image" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="M21 15l-5-5L5 21"/></symbol>
     <symbol id="icon-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
     <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="icon-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
@@ -88,7 +88,6 @@
         <span id="count" class="tag"></span>
       </div>
       <div id="tableSelect" class="table-multiselect hidden"></div>
-      <p class="muted xs">点「选择数据表」弹出勾选（可多选）→ 一次导出到一个工作簿的多个 sheet；字段勾选沿用「参考表」的列，点弹窗里的表名可切换参考表。</p>
     </section>
 
     <section class="card">
@@ -97,7 +96,6 @@
         <span id="fieldSummary" class="tag">未选择</span>
       </div>
       <button id="btnFieldSelect" class="table-trigger" type="button">导出字段：已选 N 项 ▾</button>
-      <p class="muted xs">点「导出字段」弹出勾选（可多选）；勾选「按序导出所有字段」则每张表按当前视图列序导出全部字段（无视手动勾选）。</p>
     </section>
 
     <section class="card">
@@ -209,6 +207,7 @@
             <span class="switch-sub">每张表按当前视图列序导出全部字段（含筛选 / 排序后的所有行，无视下方手动勾选）</span>
           </span>
         </label>
+        <div id="fieldModalTabs" class="field-modal-tabs"></div>
         <div class="field-toolbar">
           <button type="button" class="link" id="btnSelectAll">全选</button>
           <button type="button" class="link" id="btnSelectImg">仅图片</button>
