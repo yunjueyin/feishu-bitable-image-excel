@@ -412,6 +412,23 @@ body {
 .field-item .ftag .ico { width: 12px; height: 12px; }
 .placeholder { color: var(--text-muted); font-size: 14px; padding: 12px 8px; }
 
+/* 导出字段弹窗：按序导出所有字段 开关行 */
+.switch-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 12px; margin-bottom: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-2); cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.switch-row:hover { border-color: var(--blue); }
+.switch-row input { flex: none; width: 18px; height: 18px; margin-top: 1px; accent-color: var(--blue); cursor: pointer; }
+.switch-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.switch-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.switch-sub { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+.field-list.disabled { opacity: 0.4; pointer-events: none; filter: grayscale(0.5); }
+#fieldSelectModal .modal-body { padding-top: 8px; }
+#fieldSelectModal .modal-foot { gap: 8px; padding-top: 12px; }
+
 /* ---------- 折叠下拉 ---------- */
 .field-summary {
   display: inline-flex; align-items: center; gap: 6px;

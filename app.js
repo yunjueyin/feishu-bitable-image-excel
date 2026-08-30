@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830n';
+const APP_VERSION = '20260830o';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -55,6 +55,7 @@ const state = {
   lastExport: null,  // 'excel' | 'zip'，记录上次导出类型（供重试复用）
   retryMode: false,  // 当前是否为「仅重试失败项」运行
   fetchBytes: 0,     // 本次导出已取图字节累计（实时体积预估）
+  exportAllViewFields: false, // 按序导出所有字段：每张表按当前视图列序导出全部字段
 };
 
 // ---------- 工具 ----------
@@ -278,6 +279,7 @@ function saveSettings() {
     onlyUnmarked: $('#onlyUnmarked').checked,
     namingField: $('#namingField').value,
     markField: $('#markField').value,
+    allView: state.exportAllViewFields,
   });
 }
 function applySettings() {
@@ -287,6 +289,7 @@ function applySettings() {
   if (typeof s.onlyUnmarked === 'boolean') $('#onlyUnmarked').checked = s.onlyUnmarked;
   if (s.namingField) $('#namingField').value = s.namingField;
   if (s.markField) $('#markField').value = s.markField;
+  if (typeof s.allView === 'boolean') state.exportAllViewFields = s.allView;
   state.onlyUnmarked = !!s.onlyUnmarked;
 }
 
@@ -308,7 +311,7 @@ function getEffectiveRecords({ ignoreOnlyUnmarked = false } = {}) {
 // 导出规模预估（交互4：大表确认 / 功能1：耗时预估）
 function estimateExport() {
   const recs = getEffectiveRecords();
-  const fieldIds = getSelectedFieldIds();
+  const fieldIds = state.exportAllViewFields ? state.fields.map((f) => f.id) : getSelectedFieldIds();
   const attachFields = state.fields.filter((f) => f.isAttachment && fieldIds.includes(f.id));
   let imgs = 0;
   for (const r of recs) {
@@ -822,6 +825,7 @@ function renderFieldList() {
   renderGroup('图片列（嵌入单元格）', attachments, true, 'image');
   renderGroup('文字列', others, true, 'text');
   updateFieldSummary();
+  refreshFieldTrigger();
 }
 
 function selectAllFields(checked) {
@@ -838,16 +842,6 @@ function selectImageFields() {
   updateFieldSummary();
 }
 
-// 折叠下拉：切换展开/收起，并同步箭头与无障碍状态
-function toggleFieldDropdown() {
-  const dd = $('#fieldDropdown');
-  if (!dd) return;
-  const collapsed = dd.classList.toggle('collapsed');
-  const chev = $('#fieldToggle').querySelector('.chev');
-  if (chev) chev.classList.toggle('collapsed', collapsed);
-  $('#fieldToggle').setAttribute('aria-expanded', String(!collapsed));
-}
-
 // 头部摘要：显示「已选 X / N 列」或「共 N 列 · 未选」
 function updateFieldSummary() {
   const sum = $('#fieldSummary');
@@ -859,6 +853,32 @@ function updateFieldSummary() {
   // 空状态引导：未勾选任何列时给出友好提示（交互：空状态引导）
   const eh = $('#fieldEmptyHint');
   if (eh) eh.classList.toggle('hidden', checked !== 0);
+}
+
+// ---------- 导出字段选择弹窗 ----------
+function refreshFieldTrigger() {
+  const btn = $('#btnFieldSelect');
+  if (!btn) return;
+  btn.textContent = state.exportAllViewFields
+    ? '导出字段：按视图全字段 ▾'
+    : ('导出字段：已选 ' + document.querySelectorAll('#fieldList input[type=checkbox]:checked').length + ' 项 ▾');
+}
+// 同步「按序导出所有字段」开关对应的 UI（复选框状态 + 字段列表是否置灰）
+function applyAllViewState() {
+  const chk = $('#chkAllViewFields');
+  if (chk) chk.checked = !!state.exportAllViewFields;
+  const list = $('#fieldList');
+  if (list) list.classList.toggle('disabled', !!state.exportAllViewFields);
+  refreshFieldTrigger();
+}
+function openFieldSelectModal() {
+  applyAllViewState();
+  const m = $('#fieldSelectModal');
+  if (m) m.hidden = false;
+}
+function closeFieldSelectModal() {
+  const m = $('#fieldSelectModal');
+  if (m) m.hidden = true;
 }
 
 function renderTableSelect(metas, currentId) {
@@ -1104,10 +1124,19 @@ async function loadTableIntoState(id) {
   state.tableName = await table.getName();
   state.loaded = false;
   await loadFieldsData(); // 多表循环里只取字段数据，不重建字段下拉（避免标记字段选择被重置）
+  // 「按序导出所有字段」：每张表按其当前视图（筛选/排序）拉取全部数据；否则拉全表（忽略视图，保持旧行为）
+  let viewId = null;
+  if (state.exportAllViewFields) {
+    try {
+      const v = await table.getActiveView();
+      viewId = (v && v.id) || null;
+      if (viewId) log('表「' + state.tableName + '」按当前视图（筛选/排序）导出全部字段与数据', 'info');
+    } catch (e) { viewId = null; }
+  }
   const all = [];
   let pageToken; let hasMore = true; let page = 0;
   do {
-    const resp = await table.getRecordsByPage({ pageSize: 200, pageToken });
+    const resp = await table.getRecordsByPage(viewId ? { pageSize: 200, pageToken, viewId } : { pageSize: 200, pageToken });
     all.push(...(resp.records || []));
     pageToken = resp.pageToken; hasMore = resp.hasMore; page++;
     if (page > 2000) { log('已达分页安全上限，停止读取。', 'warn'); break; }
@@ -1705,7 +1734,7 @@ async function exportExcel(options) {
   if (!options.skipConfirm && !(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return finishExportUI(); }
 
   const globalFieldIds = getSelectedFieldIds();
-  if (!globalFieldIds.length) { log('请至少选择一个字段。', 'warn'); return finishExportUI(); }
+  if (!state.exportAllViewFields && !globalFieldIds.length) { log('请至少选择一个字段，或勾选「按序导出所有字段」。', 'warn'); return finishExportUI(); }
 
   try {
     const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
@@ -1760,7 +1789,9 @@ async function exportExcel(options) {
       try {
 
       // 字段选择按列 id 跨表沿用；当前表不含的列自动跳过
-      const perTableFieldIds = globalFieldIds.filter((id) => state.fields.some((f) => f.id === id));
+      const perTableFieldIds = state.exportAllViewFields
+        ? state.fields.map((f) => f.id)   // 按序导出所有字段：每张表按本身视图列序取全部字段
+        : globalFieldIds.filter((id) => state.fields.some((f) => f.id === id));
       if (!perTableFieldIds.length) { log('表「' + state.tableName + '」不含所选列，已跳过。', 'warn'); continue; }
       const plan = buildColumnPlan(perTableFieldIds);
       const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行
@@ -2214,7 +2245,7 @@ async function exportZip(options) {
   if (!options.skipConfirm && !(await ensureMarkConsent())) { log('已取消导出（标记确认）。', 'warn'); return finishExportUI(); }
 
   const globalFieldIds = getSelectedFieldIds();
-  if (!globalFieldIds.length) { log('请至少选择一个字段。', 'warn'); return finishExportUI(); }
+  if (!state.exportAllViewFields && !globalFieldIds.length) { log('请至少选择一个字段，或勾选「按序导出所有字段」。', 'warn'); return finishExportUI(); }
 
   try {
     state.stat = { orig: 0, thumb: 0 };
@@ -2265,7 +2296,9 @@ async function exportZip(options) {
       try {
 
       // 字段选择按列 id 跨表沿用；当前表不含的列自动跳过
-      const perTableFieldIds = globalFieldIds.filter((id) => state.fields.some((f) => f.id === id));
+      const perTableFieldIds = state.exportAllViewFields
+        ? state.fields.map((f) => f.id)   // 按序导出所有字段：每张表按本身视图列序取全部字段
+        : globalFieldIds.filter((id) => state.fields.some((f) => f.id === id));
       let attachFields = state.fields.filter((f) => f.isAttachment && perTableFieldIds.includes(f.id));
       if (!attachFields.length) attachFields = state.fields.filter((f) => f.isAttachment);
       if (!attachFields.length) { log('表「' + state.tableName + '」没有可用的图片字段，已跳过。', 'warn'); continue; }
@@ -2612,10 +2645,23 @@ function bootstrap() {
   $('#btnSelectAll').addEventListener('click', () => { selectAllFields(true); saveSelection(); });
   $('#btnClearAll').addEventListener('click', () => { selectAllFields(false); saveSelection(); });
   $('#btnSelectImg').addEventListener('click', () => { selectImageFields(); saveSelection(); });
-  // 导出字段折叠下拉
-  $('#fieldToggle').addEventListener('click', toggleFieldDropdown);
-  $('#fieldToggle').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFieldDropdown(); } });
-  $('#fieldList').addEventListener('change', () => { updateFieldSummary(); saveSelection(); });
+  $('#fieldList').addEventListener('change', () => { if (!state.exportAllViewFields) { updateFieldSummary(); saveSelection(); } });
+  // 导出字段选择弹窗
+  const fmodal = $('#fieldSelectModal');
+  if (fmodal) {
+    $('#btnFieldSelect').addEventListener('click', openFieldSelectModal);
+    $('#btnCloseFieldModal').addEventListener('click', closeFieldSelectModal);
+    $('#btnConfirmFieldSelect').addEventListener('click', closeFieldSelectModal);
+    $('#btnCancelFieldSelect').addEventListener('click', closeFieldSelectModal);
+    fmodal.addEventListener('click', (e) => { if (e.target === fmodal) closeFieldSelectModal(); });
+    const chk = $('#chkAllViewFields');
+    if (chk) chk.addEventListener('change', () => {
+      state.exportAllViewFields = chk.checked;
+      saveSettings();
+      applyAllViewState();
+    });
+    applyAllViewState();
+  }
   // 主题切换
   initTheme();
   $('#btnTheme').addEventListener('click', toggleTheme);
@@ -2671,7 +2717,7 @@ function bootstrap() {
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnCloseSettings').addEventListener('click', closeSettings);
   $('#settingsModal').addEventListener('click', (e) => { if (e.target === $('#settingsModal')) closeSettings(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSettings(); closeTableSelectModal(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSettings(); closeTableSelectModal(); closeFieldSelectModal(); } });
   // 数据表选择弹窗
   const list = $('#tableSelectList');
   if (list) {

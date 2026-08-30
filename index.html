@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260830n" />
+  <link rel="stylesheet" href="./styles.css?v=20260830o" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -91,24 +91,13 @@
       <p class="muted xs">点「选择数据表」弹出勾选（可多选）→ 一次导出到一个工作簿的多个 sheet；字段勾选沿用「参考表」的列，点弹窗里的表名可切换参考表。</p>
     </section>
 
-    <section class="card card-collapsible">
-      <div class="card-head clickable" id="fieldToggle" role="button" tabindex="0" aria-expanded="false">
+    <section class="card">
+      <div class="card-head">
         <span class="card-title"><span class="ico-tile t-blue"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image"/></svg></span>导出字段</span>
-        <span class="field-summary" id="fieldSummary">未选择</span>
-        <span class="chev collapsed"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
+        <span id="fieldSummary" class="tag">未选择</span>
       </div>
-      <div class="field-dropdown collapsed" id="fieldDropdown">
-        <div class="field-toolbar">
-          <button type="button" class="link" id="btnSelectAll">全选</button>
-          <button type="button" class="link" id="btnClearAll">清空</button>
-          <button type="button" class="link" id="btnSelectImg">仅图片</button>
-        </div>
-        <p class="muted xs">勾选要导出的列 · 图片列自动嵌入单元格</p>
-        <div id="fieldList" class="field-list">
-          <div class="placeholder">请先在飞书中打开本插件并选择数据表</div>
-        </div>
-        <p id="fieldEmptyHint" class="empty-hint hidden"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image-off"/></svg><span>尚未勾选任何列。请至少勾选一个「图片列」（或点「仅图片」），否则导出将无内容。</span></p>
-      </div>
+      <button id="btnFieldSelect" class="table-trigger" type="button">导出字段：已选 N 项 ▾</button>
+      <p class="muted xs">点「导出字段」弹出勾选（可多选）；勾选「按序导出所有字段」则每张表按当前视图列序导出全部字段（无视手动勾选）。</p>
     </section>
 
     <section class="card">
@@ -200,6 +189,40 @@
         <button type="button" class="btn btn-soft" id="btnClearTableSelect">清空</button>
         <button type="button" class="btn btn-soft" id="btnSelectAllTables">全选</button>
         <button type="button" class="btn btn-primary" id="btnConfirmTableSelect">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导出字段选择弹窗 -->
+  <div class="modal-mask" id="fieldSelectModal" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="fieldModalTitle">
+      <div class="modal-head">
+        <span class="ico-tile t-blue"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image"/></svg></span>
+        <span id="fieldModalTitle">选择导出字段</span>
+        <button class="icon-btn" id="btnCloseFieldModal" type="button" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <label class="switch-row">
+          <input type="checkbox" id="chkAllViewFields" />
+          <span class="switch-text">
+            <span class="switch-title">按序导出所有字段</span>
+            <span class="switch-sub">每张表按当前视图列序导出全部字段（含筛选 / 排序后的所有行，无视下方手动勾选）</span>
+          </span>
+        </label>
+        <div class="field-toolbar">
+          <button type="button" class="link" id="btnSelectAll">全选</button>
+          <button type="button" class="link" id="btnSelectImg">仅图片</button>
+          <button type="button" class="link" id="btnClearAll">清空</button>
+        </div>
+        <p class="muted xs">勾选要导出的列 · 图片列自动嵌入单元格</p>
+        <div id="fieldList" class="field-list">
+          <div class="placeholder">请先在飞书中打开本插件并选择数据表</div>
+        </div>
+        <p id="fieldEmptyHint" class="empty-hint hidden"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-image-off"/></svg><span>尚未勾选任何列。请至少勾选一个「图片列」（或点「仅图片」），否则导出将无内容。</span></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-soft" id="btnCancelFieldSelect">取消</button>
+        <button type="button" class="btn btn-primary" id="btnConfirmFieldSelect">确定</button>
       </div>
     </div>
   </div>
