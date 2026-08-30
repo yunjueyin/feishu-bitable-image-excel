@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830g';
+const APP_VERSION = '20260830h';
 
 // 页面加载即自报版本（无需导出即可核对飞书是否加载到新代码）：仅写入副标题后缀 + 运行日志首行。
 // 注意：绝不改写 #statusText —— 那是 init() 显示「已连接 / 错误」的真实状态栏。先前版本在加载时把
@@ -88,6 +88,12 @@ function showProgress() { const b = $('#progressBox'); if (b) b.classList.remove
 function hideProgress() { const b = $('#progressBox'); if (b) b.classList.add('hidden'); }
 function setProgressCount(text) { const c = $('#progressCount'); if (c) c.textContent = text || ''; }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error((label || '操作') + ' 超时（' + ms + 'ms）')), ms))
+  ]);
+}
 // 人类可读体积（实时预估导出文件大小）
 function humanSize(n) {
   n = n || 0;
@@ -561,13 +567,15 @@ async function loadPreviewThumbs() {
 
 // ---------- 加载 SDK ----------
 async function loadSdk() {
+  setStatus('正在加载飞书 SDK…', 'idle');
   const urls = [
     'https://cdn.jsdelivr.net/npm/@lark-base-open/js-sdk@1.0.2/dist/index.mjs',
     'https://esm.sh/@lark-base-open/js-sdk@1.0.2',
   ];
   for (const url of urls) {
     try {
-      const m = await import(/* @vite-ignore */ url);
+      log('尝试加载 SDK：' + url);
+      const m = await withTimeout(import(/* @vite-ignore */ url), 12000, 'SDK 加载(' + url + ')');
       if (m && m.bitable) {
         state.bitable = m.bitable;
         state.ImageQuality = m.ImageQuality || ImageQualityFallback;
@@ -642,13 +650,13 @@ function setSeg(id, val) {
   });
 }
 
-// 带重试的 SDK 调用：飞书 webview 内偶发「接口就绪前调用即失败」，重试几次即可恢复，
-// 这正是「数据表没被识别/加载」最可能的瞬时根因——并非代码逻辑错误，而是初始化时机问题。
-async function withRetry(fn, label, times = 3, gap = 400) {
+// 带重试 + 超时的 SDK 调用：飞书 webview 内偶发「接口就绪前调用即失败」或「永不 resolve」，
+// 重试 + 单次超时能把这种挂起变成可捕获错误，方便定位卡在何处。
+async function withRetry(fn, label, times = 3, gap = 400, timeoutMs = 15000) {
   let lastErr;
   for (let i = 1; i <= times; i++) {
     try {
-      const r = await fn();
+      const r = timeoutMs ? await withTimeout(fn(), timeoutMs, label) : await fn();
       if (i > 1) log('[重试成功] ' + label + ' 第 ' + i + ' 次成功', 'ok');
       return r;
     } catch (e) {
@@ -662,16 +670,19 @@ async function withRetry(fn, label, times = 3, gap = 400) {
 
 // ---------- 初始化 ----------
 async function init() {
+  log('[诊断] init() 开始');
   const okSdk = await loadSdk();
   if (!okSdk) {
     setStatus('未加载飞书 SDK（请检查网络 / CDN）', 'err');
     log('本插件需作为飞书多维表「自定义插件」打开。', 'err');
     return;
   }
+  setStatus('飞书 SDK 已加载，读取数据表…', 'idle');
   log('[诊断] SDK 已加载，开始获取表信息…');
   try {
     // 列出全部数据表，支持用户切换
     try {
+      setStatus('读取数据表列表…', 'idle');
       const metas = await withRetry(() => state.bitable.base.getTableMetaList(), 'getTableMetaList');
       state.tableMetas = Array.isArray(metas) ? metas : [];
     } catch (e) {
@@ -681,9 +692,11 @@ async function init() {
     log('[诊断] getTableMetaList 返回 ' + state.tableMetas.length + ' 张表：' +
         (state.tableMetas.map((m) => (m.name || m.id)).join('、') || '（空）'));
 
+    setStatus('获取当前数据表…', 'idle');
     const table = await withRetry(() => state.bitable.base.getActiveTable(), 'getActiveTable');
     state.table = table;
     state.tableId = (table && table.id) || '';
+    setStatus('读取表名…', 'idle');
     state.tableName = await withRetry(() => table.getName(), 'table.getName');
     log('[诊断] 当前活跃表：id=' + state.tableId + ' 名称=' + state.tableName);
 
@@ -2378,9 +2391,27 @@ window.addEventListener('DOMContentLoaded', () => {
     if (chev) chev.classList.toggle('collapsed', collapsed);
   });
   // 速度优化：初始化与 ExcelJS 加载并行，先尽快进入可用状态
-  init();
-  ensureExcelJS().then((ok) => {
-    if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');
-  });
-  ensureJSZip(); // 后台预载，不阻塞
+  function startApp() {
+    setStatus('初始化开始…', 'idle');
+    init();
+    ensureExcelJS().then((ok) => {
+      if (!ok) setStatus('ExcelJS 加载失败（Excel 导出将不可用）', 'err');
+    });
+    ensureJSZip(); // 后台预载，不阻塞
+  }
+  // 修复 Feishu webview 内脚本执行时 DOMContentLoaded 已触发导致监听器永不执行、
+  // 插件一直卡在"正在初始化…"的问题：已 ready 则直接启动，否则监听。
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startApp);
+  } else {
+    startApp();
+  }
+  // 兜底看门狗：若 25 秒内状态仍卡在 idle，提示用户网络/SDK 无响应
+  setTimeout(() => {
+    const statusEl = $('#status');
+    if (statusEl && statusEl.classList.contains('status-idle')) {
+      setStatus('初始化超时：飞书 SDK 或数据表接口无响应，请检查网络或关闭插件重试', 'warn');
+      log('[诊断] 初始化 watchdog 触发：25 秒内未完成', 'warn');
+    }
+  }, 25000);
 });
