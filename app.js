@@ -11,16 +11,15 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830f';
+const APP_VERSION = '20260830g';
 
-// 页面加载即自报版本（无需导出即可核对飞书是否加载到新代码）：副标题后缀 + 状态栏 + 运行日志首行。
-// 这样用户打开插件就能看到版本，不必等导出到完成卡；若飞书加载的是旧缓存，这里就不会出现新版本号。
+// 页面加载即自报版本（无需导出即可核对飞书是否加载到新代码）：仅写入副标题后缀 + 运行日志首行。
+// 注意：绝不改写 #statusText —— 那是 init() 显示「已连接 / 错误」的真实状态栏。先前版本在加载时把
+// 状态栏写成「已加载插件 v…」，会覆盖 init() 后续设置的真实错误或连接状态，导致用户「看不到真正报错」。
 (function () {
   try {
     const sub = document.querySelector('.subtitle');
     if (sub) sub.textContent = (sub.textContent || '').replace(/ · v\d+$/, '') + ' · v' + APP_VERSION;
-    const st = document.getElementById('statusText');
-    if (st) st.textContent = '已加载插件 v' + APP_VERSION;
   } catch (e) {}
   if (typeof log === 'function') log('[插件版本] ' + APP_VERSION + ' 已加载（若飞书实际表现与此版本不符，说明飞书加载的是旧缓存：需在飞书插件设置里改 URL 或重新保存以强制刷新）');
 })();
@@ -643,6 +642,24 @@ function setSeg(id, val) {
   });
 }
 
+// 带重试的 SDK 调用：飞书 webview 内偶发「接口就绪前调用即失败」，重试几次即可恢复，
+// 这正是「数据表没被识别/加载」最可能的瞬时根因——并非代码逻辑错误，而是初始化时机问题。
+async function withRetry(fn, label, times = 3, gap = 400) {
+  let lastErr;
+  for (let i = 1; i <= times; i++) {
+    try {
+      const r = await fn();
+      if (i > 1) log('[重试成功] ' + label + ' 第 ' + i + ' 次成功', 'ok');
+      return r;
+    } catch (e) {
+      lastErr = e;
+      log('[重试] ' + label + ' 第 ' + i + '/' + times + ' 次失败：' + e.message, 'warn');
+      if (i < times) await sleep(gap);
+    }
+  }
+  throw lastErr;
+}
+
 // ---------- 初始化 ----------
 async function init() {
   const okSdk = await loadSdk();
@@ -651,24 +668,38 @@ async function init() {
     log('本插件需作为飞书多维表「自定义插件」打开。', 'err');
     return;
   }
+  log('[诊断] SDK 已加载，开始获取表信息…');
   try {
     // 列出全部数据表，支持用户切换
     try {
-      const metas = await state.bitable.base.getTableMetaList();
+      const metas = await withRetry(() => state.bitable.base.getTableMetaList(), 'getTableMetaList');
       state.tableMetas = Array.isArray(metas) ? metas : [];
     } catch (e) {
       log('获取表列表失败（将仅使用当前表）：' + e.message, 'warn');
       state.tableMetas = [];
     }
-    const table = await state.bitable.base.getActiveTable();
+    log('[诊断] getTableMetaList 返回 ' + state.tableMetas.length + ' 张表：' +
+        (state.tableMetas.map((m) => (m.name || m.id)).join('、') || '（空）'));
+
+    const table = await withRetry(() => state.bitable.base.getActiveTable(), 'getActiveTable');
     state.table = table;
     state.tableId = (table && table.id) || '';
-    state.tableName = await table.getName();
-    renderTableSelect(state.tableMetas, state.tableId);
+    state.tableName = await withRetry(() => table.getName(), 'table.getName');
+    log('[诊断] 当前活跃表：id=' + state.tableId + ' 名称=' + state.tableName);
+
+    // 兜底：即使 getTableMetaList 返回空/失败，也把活跃表作为唯一下拉项显示，
+    // 避免「表没被识别」的错觉；切换表时 switchTable 会因 id 相同而直接返回，无副作用。
+    let selectMetas = state.tableMetas;
+    if ((!selectMetas || !selectMetas.length) && state.tableId) {
+      selectMetas = [{ id: state.tableId, name: state.tableName || state.tableId }];
+      log('[诊断] 表列表为空，已将活跃表作为唯一下拉项兜底显示');
+    }
+    renderTableSelect(selectMetas, state.tableId);
     setStatus('已连接：' + state.tableName, 'ok');
     await loadFields();
     applySettings(); // 恢复上次导出的常用设置（功能8）
     $('#btnLoad').disabled = false;
+    log('[诊断] 初始化完成，可点击「加载数据」', 'ok');
   } catch (e) {
     setStatus('未在飞书多维表环境中，或无法获取当前表：' + e.message, 'err');
     log('若你在普通浏览器打开本页，这是正常的——请作为飞书自定义插件使用。', 'err');
@@ -1311,6 +1342,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   }
   const need = [];
   for (let i = 0; i < tokens.length; i++) if (!out[i]) need.push(i);
+  log('[诊断] 单元格 ' + recordId + '/' + fieldId + ': tokens=' + tokens.length + ' 缓存命中=' + out.filter(Boolean).length + '/' + tokens.length + ' 待取=' + need.length + ' stat=' + JSON.stringify(state.stat));
   if (!need.length) return out; // 全部命中缓存，直接返回（仍会计入 state.stat）
 
   const run = async () => {
@@ -1403,6 +1435,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       state.fetchStat.ok += newlyGot;
       state.fetchStat.fail += Math.max(0, need.length - newlyGot);
       state.fetchStat.fallback += origFallbackGot;
+      log('[诊断] 单元格 ' + recordId + '/' + fieldId + ' 取图结果: 新取成功=' + newlyGot + '/' + need.length + ' 失败=' + Math.max(0, need.length - newlyGot) + ' fetchStat=' + JSON.stringify(state.fetchStat));
     }
 
     // 记录失败项（供「仅重试失败项」入口）
@@ -1502,7 +1535,7 @@ async function exportExcel(options) {
 
     hideDoneCard(); resetLiveThumbs(); // 新一轮导出：清掉上次的完成卡片与缩略图流
     showCancel(); showProgress(); setProgress(0);
-    log('[插件版本] ' + APP_VERSION + ' · 缓存命中计数=开 · yieldToMain=开 · imgQuality=' + state.imgQuality);
+    log('[诊断] 导出开始：版本=' + APP_VERSION + ' imgQuality=' + state.imgQuality + ' 缓存键数=' + Object.keys(state.imgCache).length + ' stat=' + JSON.stringify(state.stat) + ' fetchStat=' + JSON.stringify(state.fetchStat));
     log('开始生成 Excel…');
 
     const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行（retry 模式导出全量保序）
@@ -1683,6 +1716,7 @@ async function exportExcel(options) {
       log('诊断：已选「高清原图」但全部回退为缩略图。原图被飞书 CDN 的 CORS 策略拦截，前端无法取到像素。可在「图片设置 → 图片质量」改回「缩略图」（最快最稳）。', 'warn');
     }
     // 失败项优先提示重试：有失败时不自动下载，先弹模态让用户决策，避免重要图片静默缺失
+    log('[诊断] Excel 收尾：stat=' + JSON.stringify(state.stat) + ' fetchStat=' + JSON.stringify(state.fetchStat) + ' 弹重试=' + (state.fetchStat.fail > 0 ? '是' : '否'));
     const finishExcelDownload = () => {
       triggerDownload(blob, name);
       setProgress(100);
@@ -1959,7 +1993,7 @@ async function exportZip(options) {
 
     hideDoneCard(); resetLiveThumbs(); // 新一轮导出：清掉上次的完成卡片与缩略图流
     showCancel(); showProgress(); setProgress(0);
-    log('[插件版本] ' + APP_VERSION + ' · 缓存命中计数=开 · yieldToMain=开 · imgQuality=' + state.imgQuality);
+    log('[诊断] 导出开始：版本=' + APP_VERSION + ' imgQuality=' + state.imgQuality + ' 缓存键数=' + Object.keys(state.imgCache).length + ' stat=' + JSON.stringify(state.stat) + ' fetchStat=' + JSON.stringify(state.fetchStat));
     log('开始生成图片 ZIP…');
 
     const recs = getEffectiveRecords(state.retryMode ? { ignoreOnlyUnmarked: true } : {}); // 功能4：仅导出未标记行（retry 模式导出全量保序）
@@ -2063,6 +2097,7 @@ async function exportZip(options) {
       log('诊断：本次图片均为缩略图（最长边≤1280），已是最快路径。', 'warn');
     }
     // 失败项优先提示重试：有失败时不自动下载，先弹模态让用户决策，避免重要图片静默缺失
+    log('[诊断] ZIP 收尾：stat=' + JSON.stringify(state.stat) + ' fetchStat=' + JSON.stringify(state.fetchStat) + ' 弹重试=' + (state.fetchStat.fail > 0 ? '是' : '否'));
     const finishZipDownload = () => {
       triggerDownload(blob, name);
       setProgress(100);
@@ -2235,6 +2270,7 @@ function hideFailRetryModal() {
 }
 function promptFailRetry({ fail, rowsText, name, size, imgCount, orig, thumb, downloadFn }) {
   const m = $('#failRetryModal');
+  log('[诊断] promptFailRetry: fail=' + fail + ' modal存在=' + !!m + ' downloadFn=' + !!downloadFn);
   if (!m) { if (downloadFn) downloadFn(); return; } // 兜底：无模态则直接下载
   const msg = $('#failRetryMsg');
   if (msg) msg.textContent = '有 ' + fail + ' 张图取图失败，重要图片可能缺失。建议先点「重试失败项」补齐，再下载，避免遗漏。';
