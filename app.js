@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830s';
+const APP_VERSION = '20260830t';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -175,6 +175,8 @@ async function withRetry(fn, { retries = 3, timeoutMs = 8000, label = '', baseDe
             d = Math.min(10000, 1500 * Math.pow(2, attempt));
             mode = '·指数';
           }
+          // 全局频控避让：让所有取链接请求一起等到该时间点，避免窗口配额被打爆（修「最后几张总失败」）
+          sdkGlobalPauseUntil = Math.max(sdkGlobalPauseUntil, Date.now() + d);
         } else {
           d = baseDelay * (attempt + 1); // 普通失败短退避
           mode = '';
@@ -197,6 +199,10 @@ async function withRetry(fn, { retries = 3, timeoutMs = 8000, label = '', baseDe
 const SDK_RPS = 4;            // 取链接接口目标速率：4 QPS（官方 5 QPS，预留 1 余量，不跑满）
 const SDK_MAX_INFLIGHT = 4;   // 同时在途 SDK 调用上限：4（官方建议的 3~5 安全区间，含 1 余量）
 
+// 全局频控暂停：命中飞书 429/99991400 时，所有取链接请求一起避让到该时间点，
+// 避免 10 路 worker 各自重试把「按时间窗口」的配额瞬间打爆（典型表现：导出快结束时最后几张图总是失败）。
+let sdkGlobalPauseUntil = 0;
+
 // 令牌桶：补充令牌并控制速率。桶容量 = SDK_MAX_INFLIGHT，允许开局短暂突发，之后恒定 ≤ SDK_RPS。
 let _sdkTokens = SDK_MAX_INFLIGHT;
 let _sdkTokenLast = Date.now();
@@ -204,6 +210,8 @@ function sdkThrottle() {
   return new Promise((resolve) => {
     const tick = () => {
       const now = Date.now();
+      // 全局频控避让：命中 429 后所有取链接请求一起等，而不是各自硬闯把窗口配额打爆
+      if (now < sdkGlobalPauseUntil) { setTimeout(tick, Math.max(50, sdkGlobalPauseUntil - now)); return; }
       _sdkTokens = Math.min(SDK_MAX_INFLIGHT, _sdkTokens + ((now - _sdkTokenLast) / 1000) * SDK_RPS);
       _sdkTokenLast = now;
       if (_sdkTokens >= 1) { _sdkTokens -= 1; resolve(); }
@@ -1763,36 +1771,43 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
       }
     }
 
-    // 取图实时计数（交互3）：成功/失败/原图回退。缓存命中不重复计数；「回退」仅指「缩略图失败→原图兜底成功」。
+    // 取图实时计数（交互3）：成功/原图回退实时计入；失败与重试集合统一在「单元格结算」处统计，
+    // 避免被外层安全网漏计（旧实现在 25s 安全网触发时直接 return empty() 把失败吞掉，导致收尾不弹重试模态）。
     if (state.fetchStat) {
       const newlyGot = thumbGot + origFallbackGot + origDirectGot;
       state.fetchStat.ok += newlyGot;
-      state.fetchStat.fail += Math.max(0, need.length - newlyGot);
       state.fetchStat.fallback += origFallbackGot;
-      log('[诊断] 单元格 ' + recordId + '/' + fieldId + ' 取图结果: 新取成功=' + newlyGot + '/' + need.length + ' 失败=' + Math.max(0, need.length - newlyGot) + ' fetchStat=' + JSON.stringify(state.fetchStat));
+      log('[诊断] 单元格 ' + recordId + '/' + fieldId + ' 取图结果: 新取成功=' + newlyGot + '/' + need.length + ' fetchStat=' + JSON.stringify(state.fetchStat));
     }
-
-    // 记录失败项（供「仅重试失败项」入口）
-    if (!state.aborted) {
-      for (let i = 0; i < tokens.length; i++) {
-        if (!out[i]) {
-          const k = q + '|' + fieldId + '|' + recordId + '|' + i;
-          state.failPairs.add(k);
-          state.failRows.add(recordId);
-        }
-      }
-    }
-
     if (!out.some(Boolean)) log('  该单元格原图与缩略图均不可取', 'err');
     return out;
   };
 
-    // 整体超时兜底：单格取图最多 25s，超时则放弃该格图片返回空，避免一个单元格的飞书接口挂起把整批导出拖死。
-    // 配合上方缩略图 8s / 原图 8s / 下载 5s 的各级超时与 abort 检查，空格子可秒级放行、取消可秒级响应。
-  return withTimeout(run(), 25000, 'fetchCellImages').catch((e) => {
+  // 整体超时兜底：单格取图最多 50s（原 25s 会先于限流退避结束，把本格「安全网」腰斩且漏计失败）。
+  // 50s 仅作真正挂死的保护；正常限流退避下单元格会在 50s 内收敛。无论超时还是正常结束，
+  // 都在「单元格结算」处把 out 里仍为空（未取到）的图计入 fetchStat.fail 与 failPairs，
+  // 保证失败的图一定弹「手动重试」模态，而不是直接打包带走。
+  const result = await withTimeout(run(), 50000, 'fetchCellImages').catch((e) => {
     log('  单格取图超时已跳过（' + tokens.length + ' 张）', 'warn');
-    return empty();
+    return out; // 保留已取到的部分图，丢失的由下方结算计入失败
   });
+  // —— 单元格结算：凡是 out 里仍为空（未取到）的图，一律计入失败 + 重试集合（去重试时按 key 重取）——
+  let miss = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    if (!out[i]) {
+      miss++;
+      if (!state.aborted) {
+        const k = q + '|' + fieldId + '|' + recordId + '|' + i;
+        state.failPairs.add(k);
+        state.failRows.add(recordId);
+      }
+    }
+  }
+  if (miss && state.fetchStat) {
+    state.fetchStat.fail += miss;
+    log('[诊断] 单元格 ' + recordId + '/' + fieldId + ' 失败结算: 失败=' + miss + ' fetchStat=' + JSON.stringify(state.fetchStat));
+  }
+  return result;
 }
 
 // ---------- 文字单元格格式化 ----------
@@ -1860,6 +1875,7 @@ async function exportExcel(options) {
     state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(不依赖CDN,最稳) / orig=高清原图(直连飞书CDN)
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0, skipped: 0 }; // 交互3；empty=空单元格；skipped=视频/非图片跳过
+    sdkGlobalPauseUntil = 0; // 重置上一轮可能残留的全局频控暂停，避免拖延本次首发请求
     state.aborted = false; // 功能5
     state.confirmedCancel = false; // 功能5：取消弹层
     state.lastExport = 'excel';
@@ -2367,6 +2383,7 @@ async function exportZip(options) {
   try {
     state.stat = { orig: 0, thumb: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0, skipped: 0 }; // 交互3；empty=空单元格；skipped=视频/非图片跳过
+    sdkGlobalPauseUntil = 0; // 重置上一轮可能残留的全局频控暂停，避免拖延本次首发请求
     state.aborted = false; // 功能5
     state.confirmedCancel = false; // 功能5：取消弹层
     state.lastExport = 'zip';
