@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830m';
+const APP_VERSION = '20260830n';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -868,28 +868,22 @@ function renderTableSelect(metas, currentId) {
   if (!metas || !metas.length) { box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
 
-  // 触发按钮：默认只显示「已选 N 张 ▾」，点开才弹出勾选面板（表很多时不占满整屏）
+  // 触发按钮：默认只显示一行，点击后弹出弹窗选择（表很多时不占满整屏）
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'table-trigger';
   box.appendChild(trigger);
+  trigger.addEventListener('click', openTableSelectModal);
+  renderTableSelectList(metas, currentId);
+  refreshTableTrigger();
+}
 
-  // 收起面板（默认隐藏）
-  const panel = document.createElement('div');
-  panel.className = 'table-panel hidden';
-  box.appendChild(panel);
-
-  // 工具栏：全选 / 清空
-  const bar = document.createElement('div');
-  bar.className = 'multi-bar';
-  const all = document.createElement('button');
-  all.type = 'button'; all.className = 'link'; all.textContent = '全选';
-  const none = document.createElement('button');
-  none.type = 'button'; none.className = 'link'; none.textContent = '清空';
-  bar.appendChild(all); bar.appendChild(none);
-  panel.appendChild(bar);
-
-  // 复选框列表（可多选 → 一次导出到一个工作簿的多个 sheet）
+// 把复选列表渲染到弹窗容器（与触发按钮分离，方便弹窗展示）
+function renderTableSelectList(metas, currentId) {
+  const list = $('#tableSelectList');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!metas || !metas.length) return;
   for (const m of metas) {
     const row = document.createElement('label');
     row.className = 'table-row';
@@ -905,25 +899,34 @@ function renderTableSelect(metas, currentId) {
     }
     // 点表名：切换为「参考表」（加载其字段到字段勾选区）；勾选框决定导出成员
     name.addEventListener('click', (e) => { e.preventDefault(); switchTable(m.id); });
+    cb.addEventListener('change', refreshTableTrigger);
     row.appendChild(cb);
     row.appendChild(name);
-    panel.appendChild(row);
+    list.appendChild(row);
   }
+}
 
-  // 刷新触发按钮文案（已选 N 张）
-  const refreshTrigger = () => {
-    const n = panel.querySelectorAll('input[type=checkbox]:checked').length;
-    const open = !panel.classList.contains('hidden');
-    trigger.textContent = '数据表：已选 ' + n + ' 张 ' + (open ? '▲' : '▾');
-  };
-  trigger.addEventListener('click', () => {
-    panel.classList.toggle('hidden');
-    refreshTrigger();
-  });
-  all.addEventListener('click', () => { panel.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = true; }); refreshTrigger(); });
-  none.addEventListener('click', () => { panel.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = false; }); refreshTrigger(); });
-  panel.querySelectorAll('input[type=checkbox]').forEach((c) => { c.addEventListener('change', refreshTrigger); });
-  refreshTrigger();
+function refreshTableTrigger() {
+  const list = $('#tableSelectList');
+  const trigger = $('#tableSelect .table-trigger');
+  const n = list ? list.querySelectorAll('input[type=checkbox]:checked').length : 0;
+  if (trigger) trigger.textContent = '数据表：已选 ' + n + ' 张 ▾';
+}
+
+function openTableSelectModal() {
+  const modal = $('#tableSelectModal');
+  if (!modal) return;
+  // 如果弹窗列表还没渲染（初始化时可能没表），依据当前 state.tableMetas 重绘
+  const list = $('#tableSelectList');
+  if (list && !list.children.length && state.tableMetas && state.tableMetas.length) {
+    renderTableSelectList(state.tableMetas, state.tableId);
+  }
+  modal.hidden = false;
+}
+
+function closeTableSelectModal() {
+  const modal = $('#tableSelectModal');
+  if (modal) modal.hidden = true;
 }
 
 async function switchTable(id) {
@@ -943,7 +946,7 @@ async function switchTable(id) {
     setStatus('已连接：' + state.tableName, 'ok');
     await loadFields();
     // 切为参考表时默认把它也勾选进导出集合，方便「配置哪张就导出哪张」
-    const cb = document.querySelector('#tableSelect input[data-tid="' + id + '"]');
+    const cb = document.querySelector('#tableSelectList input[data-tid="' + id + '"]');
     if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change')); } // 触发计数刷新
     markReferenceTable(id);
     log('已切换数据表：' + state.tableName + '，正在自动加载数据…', 'ok');
@@ -1066,7 +1069,7 @@ function isRecordFullyExported(cache, attachFields) {
 }
 
 function getSelectedTableIds() {
-  const boxes = document.querySelectorAll('#tableSelect input[type=checkbox]');
+  const boxes = document.querySelectorAll('#tableSelectList input[type=checkbox]');
   const ids = [];
   boxes.forEach((c) => { if (c.checked && c.dataset.tid) ids.push(c.dataset.tid); });
   if (!ids.length && state.tableId) return [state.tableId];
@@ -1081,7 +1084,7 @@ function tableMetas_name(id) {
 
 // 仅刷新「参考表」标签，不动复选框勾选状态（避免破坏多表选择）
 function markReferenceTable(id) {
-  document.querySelectorAll('#tableSelect .table-row').forEach((row) => {
+  document.querySelectorAll('#tableSelectList .table-row').forEach((row) => {
     const cb = row.querySelector('input[type=checkbox]');
     const name = row.querySelector('.tname');
     if (!name) return;
@@ -2668,7 +2671,16 @@ function bootstrap() {
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnCloseSettings').addEventListener('click', closeSettings);
   $('#settingsModal').addEventListener('click', (e) => { if (e.target === $('#settingsModal')) closeSettings(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSettings(); closeTableSelectModal(); } });
+  // 数据表选择弹窗
+  const list = $('#tableSelectList');
+  if (list) {
+    $('#btnCloseTableModal').addEventListener('click', closeTableSelectModal);
+    $('#btnConfirmTableSelect').addEventListener('click', closeTableSelectModal);
+    $('#btnSelectAllTables').addEventListener('click', () => { list.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = true; }); refreshTableTrigger(); });
+    $('#btnClearTableSelect').addEventListener('click', () => { list.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = false; }); refreshTableTrigger(); });
+    $('#tableSelectModal').addEventListener('click', (e) => { if (e.target === $('#tableSelectModal')) closeTableSelectModal(); });
+  }
   // 导出方案（多套命名预设）
   $('#btnSchemeSave').addEventListener('click', saveCurrentScheme);
   $('#btnSchemeApply').addEventListener('click', () => { const n = $('#schemeSelect').value; if (n) applyScheme(n); else showToast('请选择方案', '先在上方下拉选择要应用的方案'); });

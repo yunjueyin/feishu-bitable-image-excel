@@ -44,6 +44,10 @@
   --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 16px 38px -16px rgba(16, 24, 40, 0.12);
   --shadow-pop: 0 30px 80px -22px rgba(16, 24, 40, 0.32), 0 10px 30px -12px rgba(16, 24, 40, 0.18);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* 输入框/触发按钮背景（自动跟随明暗主题） */
+  --bg-input: var(--bg-2);
+  --accent-soft: rgba(45, 127, 249, 0.12);
 }
 
 /* 暗色主题（手动切换） */
@@ -77,6 +81,10 @@
 
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 34px -16px rgba(0, 0, 0, 0.5);
   --shadow-pop: 0 30px 80px -22px rgba(0, 0, 0, 0.7), 0 10px 30px -12px rgba(0, 0, 0, 0.55);
+
+  /* 输入框/触发按钮背景（自动跟随明暗主题） */
+  --bg-input: var(--bg-2);
+  --accent-soft: rgba(77, 131, 255, 0.18);
 }
 
 /* 暗色下图标块投影收敛、品牌 logo 投影 */
@@ -886,12 +894,11 @@ body {
   transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
 }
 .table-trigger:hover { border-color: var(--accent); }
-.table-panel {
-  margin-top: 8px; padding: 8px;
-  border: 1px solid var(--border); border-radius: 10px;
-  background: var(--bg-input, #fff);
+/* 弹窗内的表选择列表 */
+.table-select-list {
   display: flex; flex-direction: column; gap: 6px;
-  max-height: 260px; overflow: auto;
+  max-height: 52vh; overflow: auto;
+  padding-right: 4px;
 }
-.table-panel.hidden { display: none; }
-.table-panel .multi-bar { margin-bottom: 2px; }
+#tableSelectModal .modal-body { padding-top: 6px; }
+#tableSelectModal .modal-foot { gap: 8px; padding-top: 12px; }
