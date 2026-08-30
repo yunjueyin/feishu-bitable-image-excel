@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830p';
+const APP_VERSION = '20260830q';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -740,8 +740,9 @@ async function init() {
 
 // 仅计算并填充 state.fields（不碰任何 DOM），供导出循环里「按表切换」复用，
 // 避免反复重建字段下拉导致标记字段选择被重置。
-async function loadFieldsData() {
-  const metas = await state.table.getFieldMetaList();
+// 取某张表的「字段元数据」，并按该表视图的列序重排（保证与用户看到的列序一致）
+async function getOrderedFieldMetasForTable(table, preferActive) {
+  const metas = await table.getFieldMetaList();
   let list = metas.map((m) => ({
     id: m.id,
     name: m.name,
@@ -749,26 +750,63 @@ async function loadFieldsData() {
     isPrimary: !!m.isPrimary,
     isAttachment: m.type === FIELD_TYPE_ATTACHMENT,
   }));
-  // 导出列序对齐：按当前视图（即界面实际列序）重排，避免导出顺序与表格不一致
+  // 按视图列序重排：图片列/文字列分组展示不改变这里算出的顺序，导出列序也以此为准
+  const orderIds = await resolveViewFieldOrder(table, preferActive);
+  if (orderIds && orderIds.length) {
+    const pos = new Map();
+    orderIds.forEach((id, i) => { if (!pos.has(id)) pos.set(id, i); });
+    list.sort((a, b) =>
+      ((pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9)));
+  }
+  return list;
+}
+
+// 解析某表「视图列序」：优先用当前激活视图（仅参考表有意义），否则回退到该表第一个网格视图
+async function resolveViewFieldOrder(table, preferActive) {
+  let view = null;
+  if (preferActive) {
+    try { view = await table.getActiveView(); } catch (e) { view = null; }
+  }
+  if (!view) view = await firstGridView(table);
+  if (!view) return null;
   try {
-    const view = await state.table.getActiveView();
-    // 注意：IWidgetView 没有 .fields 属性，必须用 getFieldMetaList() 取「当前视图的列序」
-    const vmetas = view ? await view.getFieldMetaList() : null;
-    const vfields = Array.isArray(vmetas) ? vmetas : null;
-    if (vfields && vfields.length) {
-      const order = vfields
+    const vmetas = await view.getFieldMetaList();
+    if (Array.isArray(vmetas) && vmetas.length) {
+      return vmetas
         .map((x) => (typeof x === 'string' ? x : (x && (x.fieldId || x.id))))
         .filter(Boolean);
-      if (order.length) {
-        const pos = new Map();
-        order.forEach((id, i) => { if (!pos.has(id)) pos.set(id, i); });
-        list.sort((a, b) =>
-          ((pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9)));
-      }
     }
-  } catch (e) { /* 取不到视图列序则保持原顺序 */ }
-  state.fields = list;
-  return list;
+  } catch (e) { /* 取不到则回退建表顺序 */ }
+  return null;
+}
+
+// 取某表的第一个网格视图（type=1），用于「非激活表」也能量到稳定列序
+// 注意：getActiveView() 基于 base.getSelection() 是全局选择，对传进来的非聚焦表会取到错误表的视图，
+// 因此切换其他表时必须用「该表自身的视图」而非 getActiveView()。
+async function firstGridView(table) {
+  try {
+    const views = await table.getViewMetaList();
+    if (Array.isArray(views) && views.length) {
+      const grid = views.find((v) => v && (v.type === 1 || ('' + v.type).toUpperCase() === 'GRID')) || views[0];
+      if (grid && grid.id) return await table.getViewById(grid.id);
+    }
+  } catch (e) { /* 忽略 */ }
+  return null;
+}
+
+// 取某表用于「按视图导出」的视图 id：参考表用当前激活视图，其他表回退到其首个网格视图
+// （不能用全局 getActiveView()，否则非参考表会取到错误表的视图）
+async function getTableActiveOrFirstGridViewId(table, preferActive) {
+  let view = null;
+  if (preferActive) { try { view = await table.getActiveView(); } catch (e) { view = null; } }
+  if (!view) view = await firstGridView(table);
+  return view ? view.id : null;
+}
+
+async function loadFieldsData(preferActive) {
+  // 参考表：优先用用户当前激活视图的列序（最贴合「数据表看到的列序」）；多表循环里非参考表传 false
+  state.fields = await getOrderedFieldMetasForTable(state.table, preferActive !== false);
+  return state.fields;
 }
 
 async function loadFields() {
@@ -882,29 +920,9 @@ function applyAllViewState() {
 async function loadTableFieldsOnly(id) {
   if (!state.bitable || !id) return;
   const table = await state.bitable.base.getTableById(id);
-  const metas = await table.getFieldMetaList();
-  let list = metas.map((m) => ({
-    id: m.id,
-    name: m.name,
-    type: m.type,
-    isPrimary: !!m.isPrimary,
-    isAttachment: m.type === FIELD_TYPE_ATTACHMENT,
-  }));
-  try {
-    const view = await table.getActiveView();
-    const vmetas = view ? await view.getFieldMetaList() : null;
-    const vfields = Array.isArray(vmetas) ? vmetas : null;
-    if (vfields && vfields.length) {
-      const order = vfields.map((x) => (typeof x === 'string' ? x : (x && (x.fieldId || x.id)))).filter(Boolean);
-      if (order.length) {
-        const pos = new Map();
-        order.forEach((id, i) => { if (!pos.has(id)) pos.set(id, i); });
-        list.sort((a, b) =>
-          ((pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9)));
-      }
-    }
-  } catch (e) { /* 取不到视图列序则保持原顺序 */ }
-  state.fields = list;
+  // 关键：非参考表不能用 getActiveView()（它基于全局 selection，会取到错误表的视图）。
+  // 直接用该表自身的首个网格视图列序，保证文字列/图片列的排序与这张表界面列序一致。
+  state.fields = await getOrderedFieldMetasForTable(table, false);
 }
 
 // 按指定表 id 保存/恢复字段勾选（未保存时默认全选）
@@ -1216,20 +1234,21 @@ function markReferenceTable(id) {
 // 多表批量导出：把全局 state 切换到指定表（加载其字段/记录），供单表核心复用
 async function loadTableIntoState(id) {
   if (!state.bitable || !id) return;
+  const isActiveTable = (id === state.tableId); // 切换前 state.tableId 仍是参考表，先记录
   const table = await state.bitable.base.getTableById(id);
   state.table = table;
   state.tableId = id;
   state.tableName = await table.getName();
   state.loaded = false;
-  await loadFieldsData(); // 多表循环里只取字段数据，不重建字段下拉（避免标记字段选择被重置）
-  // 「按序导出所有字段」：每张表按其当前视图（筛选/排序）拉取全部数据；否则拉全表（忽略视图，保持旧行为）
+  // 多表循环里只取字段数据，不重建字段下拉（避免标记字段选择被重置）。
+  // 非参考表必须用「该表自身视图」列序，禁用全局 getActiveView()（会取到错误表的视图）。
+  await loadFieldsData(isActiveTable);
+  // 「按序导出所有字段」：每张表按其视图（筛选/排序）拉取全部数据；
+  // 参考表用当前激活视图，其他表回退到其首个网格视图（保证按该表自己的筛选/排序，而非错误表的）。
   let viewId = null;
   if (state.exportAllViewFields) {
-    try {
-      const v = await table.getActiveView();
-      viewId = (v && v.id) || null;
-      if (viewId) log('表「' + state.tableName + '」按当前视图（筛选/排序）导出全部字段与数据', 'info');
-    } catch (e) { viewId = null; }
+    viewId = await getTableActiveOrFirstGridViewId(table, isActiveTable);
+    if (viewId) log('表「' + state.tableName + '」按当前视图（筛选/排序）导出全部字段与数据', 'info');
   }
   const all = [];
   let pageToken; let hasMore = true; let page = 0;
