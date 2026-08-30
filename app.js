@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830t';
+const APP_VERSION = '20260830u';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -469,12 +469,13 @@ function showDoneCard(info) {
   const rows = [['文件名', info.name || '—']];
   if (info.rowsText) rows.push(['导出行数', info.rowsText]);
   rows.push(['图片', '原图 ' + (info.orig || 0) + ' / 缩略图 ' + (info.thumb || 0) + '（共 ' + (info.imgCount || 0) + ' 张）']);
+  rows.push(['取图失败', (info.fail || 0) + ' 张' + (info.fail ? '（可点「仅重试失败项」补齐）' : '')]);
+  rows.push(['跳过', (info.skipped || 0) + ' 张（视频/非图片）']);
+  if (info.empty > 0) rows.push(['空图片单元格', info.empty + ' 个']);
   rows.push(['文件大小', info.size || '—']);
   rows.push(['插件版本', APP_VERSION]); // 自报：飞书实际跑的是哪一份代码，便于核对是否旧包/旧缓存
-  if (info.fail) rows.push(['取图失败', info.fail + ' 张（可点「仅重试失败项」补齐）']);
   body.innerHTML = rows.map((r) => '<div class="done-row"><span class="done-k">' + escapeHtml(r[0]) + '</span><span class="done-v">' + escapeHtml(r[1]) + '</span></div>').join('');
-  let copy = '文件：' + (info.name || '') + (info.rowsText ? ('\n行数：' + info.rowsText) : '') + '\n图片：原图' + (info.orig || 0) + '/缩略图' + (info.thumb || 0) + '（共' + (info.imgCount || 0) + '张）\n大小：' + (info.size || '') + '\n插件版本：' + APP_VERSION;
-  if (info.fail) copy += '\n失败：' + info.fail + '张';
+  let copy = '文件：' + (info.name || '') + (info.rowsText ? ('\n行数：' + info.rowsText) : '') + '\n图片：原图' + (info.orig || 0) + '/缩略图' + (info.thumb || 0) + '（共' + (info.imgCount || 0) + '张）\n失败：' + (info.fail || 0) + '张\n跳过：' + (info.skipped || 0) + '张' + (info.empty > 0 ? '\n空单元格：' + info.empty + '个' : '') + '\n大小：' + (info.size || '') + '\n插件版本：' + APP_VERSION;
   card._copy = copy;
   card.classList.remove('hidden');
 }
@@ -536,71 +537,6 @@ async function ensureMarkConsent() {
   const ok = await showConfirm('导出完成后将' + detail + '。此操作会修改你的多维表（可手动撤销）。确定继续吗？', { okText: '继续并记住', cancelText: '取消' });
   if (ok) LS.set('fie_mark_consent', true);
   return ok;
-}
-
-// ---------- 导出前预览（UI1）----------
-async function loadPreviewThumbs() {
-  const cont = $('#previewThumbs');
-  const hint = $('#previewHint');
-  if (cont) cont.innerHTML = '';
-  if (hint) hint.textContent = '正在真实取图预判…';
-  const attachFields = state.fields.filter((f) => f.isAttachment);
-  if (!attachFields.length) { if (hint) hint.textContent = '本表没有图片字段，无可预览。'; return; }
-  if (!state.records.length) { if (hint) hint.textContent = '尚无数据，请先加载数据。'; return; }
-
-  // 预判价值：真实走缩略图取图路径（最快最稳、不依赖 CDN），取前若干行多张图，
-  // 统计成功/失败/限流，让用户提前看到「取图是否通畅、末尾批次是否可能受飞书限流」，
-  // 而不是只看首行示意误以为"都能取"。
-  const PREVIEW_ROWS = 10;
-  const MAX_SHOW = 12;
-  const MAX_STAT = 30;
-  let loaded = 0, okCount = 0, failCount = 0, rlCount = 0;
-  const sampleRows = state.records.slice(0, PREVIEW_ROWS);
-  const Q = resolveQuality();
-  try {
-    for (const rec of sampleRows) {
-      for (const f of attachFields) {
-        const cell = rec.fields && rec.fields[f.id];
-        const tokens = (Array.isArray(cell) ? cell : []).filter((x) => x && x.token).slice(0, 3);
-        for (const tk of tokens) {
-          if (loaded >= MAX_SHOW && okCount + failCount >= MAX_STAT) break;
-          try {
-            const r = await thumbLimit(() => withRetry(
-              async () => state.table.getCellThumbnailUrls([tk], f.id, rec.recordId, Q.MAX),
-              { retries: 1, timeoutMs: 10000, label: 'preview' }
-            ));
-            const im = await thumbToExcelImage(r && r[0]);
-            if (im) {
-              okCount++;
-              if (loaded < MAX_SHOW) {
-                const img = document.createElement('img');
-                img.src = 'data:' + im.extension + ';base64,' + im.base64;
-                img.className = 'pv-thumb'; img.alt = f.name;
-                cont.appendChild(img); loaded++;
-              }
-            } else { failCount++; }
-          } catch (e) {
-            failCount++;
-            try { if (isFrequencyLimit(e)) rlCount++; } catch (_) {}
-          }
-          if (state.aborted) break;
-        }
-        if (state.aborted) break;
-      }
-      if (state.aborted) break;
-    }
-  } catch (e) { /* 忽略 */ }
-
-  const totalTried = okCount + failCount;
-  let msg;
-  if (totalTried === 0) {
-    msg = '前 ' + sampleRows.length + ' 行无可取图片（空单元格/非图片）。';
-  } else {
-    msg = '真实取图预判（前 ' + sampleRows.length + ' 行·缩略图路径）：成功 ' + okCount + ' / 共 ' + totalTried
-      + (failCount ? '，失败 ' + failCount + (rlCount ? '（限流 ' + rlCount + ' 次）' : '') : '')
-      + '。' + (failCount ? '失败图导出收尾会弹「重试」；失败较多说明末尾批次可能受飞书限流，可适当调低图片质量。' : '取图路径通畅，导出应顺利。');
-  }
-  if (hint) hint.textContent = msg;
 }
 
 // ---------- 加载 SDK ----------
@@ -1178,14 +1114,6 @@ async function loadData() {
     $('#count').textContent = '共 ' + all.length + ' 行';
     $('#btnExport').disabled = false;
     $('#btnExportZip').disabled = false;
-    // 预览卡：更新预估（含耗时估算）并启用预览按钮（UI1 / 交互4 / 功能1）
-    const est = estimateExport();
-    const ps = $('#previewSummary');
-    if (ps) ps.textContent = '预计 ' + est.rows + ' 行 · 约 ' + est.imgs + ' 张图片 · ' + est.eta + (est.tooLarge ? '（较大，导出前会确认）' : '');
-    const hint = $('#previewHint');
-    if (hint) hint.textContent = '预计耗时 ' + est.eta + '（按取图 ' + SDK_RPS + ' QPS 估算，仅供规划）。取图不自动预览，点「加载预览」看首行示意。';
-    const pb = $('#btnLoadPreview');
-    if (pb) pb.disabled = false;
     setProgress(100);
     log('读取完成，共 ' + all.length + ' 行。', 'ok');
     // 空状态引导：0 行时给出提示
@@ -2129,7 +2057,7 @@ async function exportExcel(options) {
         orig: state.stat.orig, thumb: state.stat.thumb,
         imgCount: state.stat.orig + state.stat.thumb,
         size: humanSize(fileSize),
-        fail: state.fetchStat.fail,
+        fail: state.fetchStat.fail, skipped: state.fetchStat.skipped, empty: state.fetchStat.empty,
       });
       setProgress(100);
     };
@@ -2588,7 +2516,7 @@ async function exportZip(options) {
         name, orig: state.stat.orig, thumb: state.stat.thumb,
         imgCount: state.stat.orig + state.stat.thumb,
         size: humanSize(fileSize),
-        fail: state.fetchStat.fail,
+        fail: state.fetchStat.fail, skipped: state.fetchStat.skipped, empty: state.fetchStat.empty,
       });
       setProgress(100);
     };
@@ -2840,14 +2768,6 @@ function bootstrap() {
     hideCancelling();
     if (cancelDecisionResolve) { const r = cancelDecisionResolve; cancelDecisionResolve = null; r('cancel'); }
   });
-  // 导出前预览（UI1）
-  $('#previewToggle').addEventListener('click', () => {
-    const panel = $('#previewPanel');
-    const collapsed = panel.classList.toggle('collapsed');
-    const chev = $('#previewToggle').querySelector('.chev');
-    if (chev) chev.classList.toggle('collapsed', collapsed);
-  });
-  $('#btnLoadPreview').addEventListener('click', loadPreviewThumbs);
   // 导出完成汇总卡片（UI3）
   $('#btnCloseDone').addEventListener('click', hideDoneCard);
   $('#btnCopyDone').addEventListener('click', () => {

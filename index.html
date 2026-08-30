@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260830t" />
+  <link rel="stylesheet" href="./styles.css?v=20260830u" />
   <!-- ExcelJS 本地优先，失败再走 CDN（由 app.js 兜底） -->
   <script src="./vendor/exceljs.min.js"></script>
   <!-- JSZip 本地优先，失败再走 CDN（由 app.js 兜底） -->
@@ -110,20 +110,6 @@
       <div class="form-row inline-row">
         <label for="imgWidth">图片显示宽度（像素）</label>
         <input id="imgWidth" type="number" min="40" max="400" step="10" value="50" class="mini-input" />
-      </div>
-    </section>
-
-    <section class="card card-collapsible">
-      <div class="card-head clickable" id="previewToggle" role="button" tabindex="0" aria-expanded="false">
-        <span class="card-title"><span class="ico-tile t-blue"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-eye"/></svg></span>导出前预览</span>
-        <span class="field-summary" id="previewSummary">加载数据后显示预估</span>
-        <span class="chev collapsed"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron"/></svg></span>
-      </div>
-      <div class="field-dropdown collapsed" id="previewPanel">
-        <p class="muted xs">点「加载预览」取首行少量缩略图示意；下方为本次导出规模预估。</p>
-        <button type="button" class="link" id="btnLoadPreview" disabled>加载预览</button>
-        <div id="previewThumbs" class="preview-thumbs"></div>
-        <p id="previewHint" class="muted xs">请先「加载数据」。仅示意，实际以导出为准。</p>
       </div>
     </section>
 

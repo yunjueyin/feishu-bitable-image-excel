@@ -740,15 +740,6 @@ body {
 }
 .set-group .switch-row:hover { background: transparent; }
 
-/* ---------- 导出前预览缩略图 ---------- */
-.preview-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
-.pv-thumb {
-  width: 64px; height: 64px; object-fit: cover;
-  border-radius: 10px; border: 1px solid var(--border);
-  background: var(--bg-2); box-shadow: var(--shadow-card);
-}
-.preview-thumbs:empty { display: none; }
-
 /* 标记副作用说明 */
 .warn-note { color: var(--warn); margin-top: 6px; }
 
