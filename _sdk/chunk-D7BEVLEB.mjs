@@ -1,0 +1,1 @@
+import{a as t,c as r,h as n}from"./chunk-L3XSIM3S.mjs";import{a as e}from"./chunk-QKDQG6NO.mjs";var o=class extends n{setHostContainerSize(s){throw new r}closeHostContainer(){throw new r}};e([t()],o.prototype,"setHostContainerSize",1),e([t()],o.prototype,"closeHostContainer",1);export{o as a};

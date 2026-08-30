@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>飞书取图接口探针（仅测官方SDK，不碰本项目取图代码）</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,'Microsoft YaHei',sans-serif;margin:0;padding:16px;background:#f5f6f8;color:#1f2329}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:#646a73;font-size:13px;margin-bottom:12px}
+  button{font-size:15px;padding:10px 18px;border:0;border-radius:8px;background:#3370ff;color:#fff;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  #out{margin-top:14px;background:#fff;border-radius:10px;padding:12px 14px;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:55vh;overflow:auto}
+  .row{padding:2px 0;border-bottom:1px dashed #eee}
+  .err{color:#d83931}.ok{color:#2ea121}.warn{color:#bb7a00}.info{color:#3370ff}
+  #render{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+  #render img{width:160px;height:160px;object-fit:contain;border:1px solid #ddd;border-radius:6px;background:#fff}
+  .legend{margin-top:10px;font-size:12px;color:#646a73}
+</style>
+</head>
+<body>
+<h1>飞书取图接口探针</h1>
+<div class="sub">只调用飞书官方 SDK 的 getCellThumbnailUrls / getCellAttachmentUrls，完全不执行本项目 app.js 的取图逻辑。用于隔离"官方接口能否返回图"与"我们代码是否有 bug"。</div>
+<button id="run">① 加载并检测</button>
+<div id="out"></div>
+<div id="render"></div>
+<div class="legend">说明：表格里出现的「✅ 可渲染」代表该返回确实是一张能显示的图；「❌ 渲染失败」多为 CORS 或返回内容非图片。把整段日志复制给我即可。</div>
+
+<script type="module">
+const $out = document.getElementById('out');
+const $render = document.getElementById('render');
+function log(msg, type) {
+  const d = document.createElement('div');
+  d.className = 'row' + (type ? ' ' + type : '');
+  d.textContent = msg;
+  $out.appendChild(d);
+  $out.scrollTop = $out.scrollHeight;
+}
+function render(src) {
+  const img = document.createElement('img');
+  img.src = src;
+  img.onload = () => log('    ✅ 该返回可渲染为图片', 'ok');
+  img.onerror = () => log('    ❌ 渲染失败（可能是 CORS 拦截或返回内容非图片）', 'err');
+  $render.appendChild(img);
+}
+function dumpItem(label, x) {
+  if (x == null) { log(label + ': null'); return; }
+  if (typeof x === 'string') {
+    log(label + ': 字符串(长度=' + x.length + ') 前80字=「' + x.slice(0, 80) + '」', 'info');
+    if (/^https?:\/\//i.test(x)) render(x);
+    else if (/^data:/i.test(x)) render(x);
+    else if (/^[A-Za-z0-9+/=]{20,}$/.test(x)) render('data:image/png;base64,' + x);
+    return;
+  }
+  if (typeof x === 'object') {
+    const keys = Object.keys(x);
+    log(label + ': 对象，键=[' + keys.join(',') + ']', 'info');
+    for (const k of ['url', 'thumbnail', 'base64', 'data', 'downloadUrl', 'type', 'width', 'height', 'token']) {
+      if (x[k] != null) log('    ' + k + ' = ' + (typeof x[k] === 'string' ? ('「' + x[k].slice(0, 80) + '」') : JSON.stringify(x[k]).slice(0, 80)));
+    }
+    if (x.url) render(x.url);
+    else if (x.base64) render('data:image/png;base64,' + x.base64);
+    else if (x.thumbnail) render(x.thumbnail);
+    return;
+  }
+  log(label + ': ' + typeof x);
+}
+async function main() {
+  document.getElementById('run').disabled = true;
+  $out.innerHTML = ''; $render.innerHTML = '';
+  log('① 加载飞书 SDK（@lark-base-open/js-sdk@1.0.2）...');
+  let bitable = null;
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/@lark-base-open/js-sdk@1.0.2/dist/index.mjs',
+    'https://esm.sh/@lark-base-open/js-sdk@1.0.2'
+  ];
+  for (const url of urls) {
+    try {
+      const m = await import(/* @vite-ignore */ url);
+      if (m && m.bitable) { bitable = m.bitable; log('SDK 加载成功：' + url, 'ok'); break; }
+    } catch (e) { log('SDK 加载失败 ' + url + '：' + e.message, 'err'); }
+  }
+  if (!bitable) { log('SDK 无法加载，终止。', 'err'); document.getElementById('run').disabled = false; return; }
+
+  log('② 获取当前数据表 getActiveTable()...');
+  let table;
+  try { table = await bitable.getActiveTable(); log('当前表获取成功', 'ok'); }
+  catch (e) { log('getActiveTable 失败：' + e.message, 'err'); document.getElementById('run').disabled = false; return; }
+
+  log('③ 枚举 table 实例真实可用方法（看 getCell* 是否在列）：');
+  const names = [];
+  let p = table;
+  while (p && p !== Object.prototype) { for (const n of Object.getOwnPropertyNames(p)) if (typeof table[n] === 'function' && !names.includes(n)) names.push(n); p = Object.getPrototypeOf(p); }
+  const getMethods = names.filter(n => n.startsWith('get')).sort();
+  log('  全部 get* 方法(' + getMethods.length + ')：' + getMethods.join(', '));
+  log('  typeof table.getCellThumbnailUrls = ' + typeof table.getCellThumbnailUrls, typeof table.getCellThumbnailUrls === 'function' ? 'ok' : 'err');
+  log('  typeof table.getCellAttachmentUrls = ' + typeof table.getCellAttachmentUrls, typeof table.getCellAttachmentUrls === 'function' ? 'ok' : 'err');
+
+  log('④ 读取字段（找附件字段，type=17）...');
+  let fields = [];
+  try { fields = await table.getFields(); } catch (e) { try { fields = await table.getFieldList(); } catch (e2) { log('  读字段失败：' + e.message, 'err'); } }
+  if (!Array.isArray(fields)) fields = (fields && fields.fields) || [];
+  const attach = fields.filter(f => f && (f.type === 17 || (typeof f.type === 'string' && /attach/i.test(f.type))));
+  log('  字段数=' + fields.length + '，疑似附件字段=' + attach.map(f => f.name + '(' + f.id + ')').join('、') || '无');
+  if (!attach.length) { log('  未找到附件字段，无法继续探测。', 'warn'); document.getElementById('run').disabled = false; return; }
+
+  log('⑤ 读记录（pageSize=3）...');
+  let records = [];
+  const recFn = table.getRecords ? table.getRecords : (table.getRecordList || null);
+  if (!recFn) { log('  未找到读记录方法（无 getRecords/getRecordList），尝试 recordIdList...', 'warn'); }
+  else { try { const r = await recFn.call(table, { pageSize: 3 }); records = Array.isArray(r) ? r : (r && r.records) || []; } catch (e) { log('  读记录失败：' + e.message, 'err'); } }
+  log('  记录数=' + (records ? records.length : 0));
+
+  log('⑥ 对第一个含附件 token 的单元格，原样调用官方接口：');
+  let probed = false;
+  for (const rec of (records || [])) {
+    for (const f of attach) {
+      const cell = rec.fields && rec.fields[f.id];
+      let items = [];
+      if (Array.isArray(cell)) items = cell;
+      else if (cell && Array.isArray(cell.value)) items = cell.value;
+      else if (cell && typeof cell === 'object') items = [cell];
+      const tokens = items.filter(x => x && x.token).map(x => x.token);
+      if (tokens.length) {
+        log('  >>> recordId=' + rec.recordId + ' 字段=' + f.name + ' token数=' + tokens.length, 'info');
+        const tk = tokens.slice(0, 2);
+        try {
+          log('  [A] getCellThumbnailUrls(' + JSON.stringify(tk) + ', ' + f.id + ', ' + rec.recordId + ', 720) ...');
+          const r = await table.getCellThumbnailUrls(tk, f.id, rec.recordId, 720);
+          log('      返回类型=' + (Array.isArray(r) ? ('数组 len=' + r.length) : typeof r), 'info');
+          if (Array.isArray(r)) r.slice(0, 3).forEach((x, i) => dumpItem('      thumb[' + i + ']', x));
+          else dumpItem('      thumb', r);
+        } catch (e) { log('      getCellThumbnailUrls 抛错：' + e.message, 'err'); }
+        try {
+          log('  [B] getCellAttachmentUrls(' + JSON.stringify(tk) + ', ' + f.id + ', ' + rec.recordId + ') ...');
+          const r2 = await table.getCellAttachmentUrls(tk, f.id, rec.recordId);
+          log('      返回类型=' + (Array.isArray(r2) ? ('数组 len=' + r2.length) : typeof r2), 'info');
+          if (Array.isArray(r2)) r2.slice(0, 3).forEach((x, i) => dumpItem('      attach[' + i + ']', x));
+          else dumpItem('      attach', r2);
+        } catch (e) { log('      getCellAttachmentUrls 抛错：' + e.message, 'err'); }
+        probed = true; break;
+      }
+    }
+    if (probed) break;
+  }
+  if (!probed) log('  未找到含附件 token 的单元格，无法探测取图。可换一个有图片的表再试。', 'warn');
+  log('=== 探测结束 ===', 'ok');
+  document.getElementById('run').disabled = false;
+}
+document.getElementById('run').addEventListener('click', () => main().catch(e => log('未捕获异常：' + (e && e.stack ? e.stack : e), 'err')));
+</script>
+</body>
+</html>
