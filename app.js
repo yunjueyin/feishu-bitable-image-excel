@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830l';
+const APP_VERSION = '20260830m';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -867,17 +867,28 @@ function renderTableSelect(metas, currentId) {
   box.innerHTML = '';
   if (!metas || !metas.length) { box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
+
+  // 触发按钮：默认只显示「已选 N 张 ▾」，点开才弹出勾选面板（表很多时不占满整屏）
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'table-trigger';
+  box.appendChild(trigger);
+
+  // 收起面板（默认隐藏）
+  const panel = document.createElement('div');
+  panel.className = 'table-panel hidden';
+  box.appendChild(panel);
+
   // 工具栏：全选 / 清空
   const bar = document.createElement('div');
   bar.className = 'multi-bar';
   const all = document.createElement('button');
   all.type = 'button'; all.className = 'link'; all.textContent = '全选';
-  all.addEventListener('click', () => { box.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = true; }); });
   const none = document.createElement('button');
   none.type = 'button'; none.className = 'link'; none.textContent = '清空';
-  none.addEventListener('click', () => { box.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = false; }); });
   bar.appendChild(all); bar.appendChild(none);
-  box.appendChild(bar);
+  panel.appendChild(bar);
+
   // 复选框列表（可多选 → 一次导出到一个工作簿的多个 sheet）
   for (const m of metas) {
     const row = document.createElement('label');
@@ -896,8 +907,23 @@ function renderTableSelect(metas, currentId) {
     name.addEventListener('click', (e) => { e.preventDefault(); switchTable(m.id); });
     row.appendChild(cb);
     row.appendChild(name);
-    box.appendChild(row);
+    panel.appendChild(row);
   }
+
+  // 刷新触发按钮文案（已选 N 张）
+  const refreshTrigger = () => {
+    const n = panel.querySelectorAll('input[type=checkbox]:checked').length;
+    const open = !panel.classList.contains('hidden');
+    trigger.textContent = '数据表：已选 ' + n + ' 张 ' + (open ? '▲' : '▾');
+  };
+  trigger.addEventListener('click', () => {
+    panel.classList.toggle('hidden');
+    refreshTrigger();
+  });
+  all.addEventListener('click', () => { panel.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = true; }); refreshTrigger(); });
+  none.addEventListener('click', () => { panel.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = false; }); refreshTrigger(); });
+  panel.querySelectorAll('input[type=checkbox]').forEach((c) => { c.addEventListener('change', refreshTrigger); });
+  refreshTrigger();
 }
 
 async function switchTable(id) {
@@ -918,7 +944,7 @@ async function switchTable(id) {
     await loadFields();
     // 切为参考表时默认把它也勾选进导出集合，方便「配置哪张就导出哪张」
     const cb = document.querySelector('#tableSelect input[data-tid="' + id + '"]');
-    if (cb) cb.checked = true;
+    if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change')); } // 触发计数刷新
     markReferenceTable(id);
     log('已切换数据表：' + state.tableName + '，正在自动加载数据…', 'ok');
     await loadData(); // 交互2：切表后自动加载，免去手动再点
@@ -1024,6 +1050,21 @@ async function loadData() {
 }
 
 // 当前勾选要导出的数据表（多选 UI）；空则回退到当前活跃表
+// 一条记录是否「可标记已导出」：仅当其所有导出图片字段均取图完整（数组非空且无 null 槽）。
+// 空单元格 / 视频 → fetchCellImages 返回 []（空数组）→ 不可标记；取图失败 → 数组含 null 槽 → 不可标记。
+// 这样：重试后原本失败的图片若这次成功，数组填满 → 自动满足条件 → 自动补打勾；仍失败的保持不标记。
+// attachFields 在多表循环里可能是 field-id 字符串数组（Excel）或字段对象数组（ZIP），两种都兼容。
+function isRecordFullyExported(cache, attachFields) {
+  if (!attachFields || !attachFields.length) return true; // 无图片列（纯文本导出）→ 视为已导出
+  for (const f of attachFields) {
+    const fid = (typeof f === 'string') ? f : f.id;
+    const arr = (cache && cache[fid]) || [];
+    if (!arr.length) return false;            // 空单元格 / 视频 → 不可标记
+    for (let i = 0; i < arr.length; i++) if (!arr[i]) return false; // 取图失败（null 槽）→ 不可标记
+  }
+  return true;
+}
+
 function getSelectedTableIds() {
   const boxes = document.querySelectorAll('#tableSelect input[type=checkbox]');
   const ids = [];
@@ -1835,11 +1876,9 @@ async function exportExcel(options) {
           await writeRow(outRow, chunk[k], cache);
           writtenRecs.push(chunk[k]);
           outRow++;
-          // 打勾判定（功能4）：成功导出至少一张图片才标记「已导出」；纯文本导出（无图片列）整行视为已导出。
-          const hasExportedImage = attachFields.length === 0
-            ? true
-            : attachFields.some((fid) => (cache[fid] || []).length > 0);
-          if (hasExportedImage) chunkWritten.push(chunk[k]);
+          // 打勾判定（精确）：仅当本记录所有导出图片字段均完整取图（无空/视频/失败）才标记「已导出」；
+          // 含空单元格 / 视频 / 取图失败的记录不打勾，重试成功后会自动满足并补打勾。
+          if (isRecordFullyExported(cache, attachFields)) chunkWritten.push(chunk[k]);
         }
         // 流式打勾：写完本块即把待打勾记录塞入全局并发池（后台并发打勾，不阻塞主流程）
         if (markFieldId) {
@@ -2260,7 +2299,7 @@ async function exportZip(options) {
 
       // ZIP 仅导出图片：图片全空的数据行无文件可写，直接跳过
       let skippedEmptyRows = 0;
-      const zipWrittenRecs = []; // 实际写入 ZIP 的记录（用于「已导出」标记，排除图片全空的行）
+      const zipWrittenRecs = []; // 实际写入 ZIP 的记录（文件内容，含部分取图成功的行；标记另由 chunkWritten 精确控制）
       // 功能6：分块取图→写 ZIP→释放，降低内存峰值
       const CHUNK = 50;
       let processed = 0;
@@ -2283,14 +2322,15 @@ async function exportZip(options) {
             })
           : chunk.map(() => ({}));
         setProgressStage('② 写入 · 表' + (ti + 1) + '/' + tableIds.length + '：' + state.tableName);
-        const chunkWritten = []; // 本块实际写入 ZIP 的记录（排除图片全空行）
+        const chunkWritten = []; // 本块待打勾记录（仅完整取图的记录，排除空/视频/失败）
         for (let k = 0; k < chunk.length; k++) {
           const cache = imgData[k] || {};
           const allImgEmpty = attachFields.length > 0 && attachFields.every((fid) => ((cache[fid] || []).length === 0));
           if (allImgEmpty) { skippedEmptyRows++; continue; } // ZIP 仅图片：全空行无内容，跳过
           const rec = chunk[k];
-          zipWrittenRecs.push(rec);
-          chunkWritten.push(rec);
+          zipWrittenRecs.push(rec); // 写入 ZIP（只要有图就写，文件内容不变）
+          // 打勾判定（精确）：仅当本记录所有导出图片字段均完整取图才标记「已导出」
+          if (isRecordFullyExported(cache, attachFields)) chunkWritten.push(rec);
           const base = safe(formatText(rec.fields ? rec.fields[namingId] : undefined)) || rec.recordId;
           for (const f of attachFields) {
             const imgs = cache[f.id] || [];
