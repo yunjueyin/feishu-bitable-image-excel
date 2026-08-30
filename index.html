@@ -239,6 +239,21 @@
     </div>
   </div>
 
+  <!-- 取图失败：优先手动重试，避免重要图片缺失被直接打包带走 -->
+  <div class="modal-mask" id="failRetryModal" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true">
+      <div class="modal-head"><span class="ico-tile t-red"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-alert"/></svg></span><span id="failRetryTitle">有图片取图失败</span></div>
+      <div class="modal-body">
+        <p class="muted" id="failRetryMsg"></p>
+        <p class="muted xs warn-note" id="failRetryHint"></p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-soft" id="btnFailDownloadAnyway" type="button"><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-download"/></svg></span>仍要下载（接受缺失）</button>
+        <button class="btn btn-primary" id="btnFailRetry" type="button"><span class="btn-ico"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-retry"/></svg></span>重试失败项</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 通用 toast（成功 / 失败，可手动关闭） -->
   <div id="toast" class="toast hidden" role="status" aria-live="polite">
     <div class="toast-icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" id="toastIconSvg"><use id="toastUse" href="#icon-check"/></svg></div>
@@ -249,6 +264,6 @@
     <button id="toastClose" class="toast-close" type="button" aria-label="关闭" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
   </div>
 
-  <script type="module" src="./app.js?v=20260830b"></script>
+  <script type="module" src="./app.js?v=20260830d"></script>
 </body>
 </html>
