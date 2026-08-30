@@ -37,7 +37,7 @@ const state = {
   fetchStat: { ok: 0, fail: 0, fallback: 0, empty: 0 }, // 取图实时计数（交互3）；empty=空图片单元格(不计失败/不重试)
   aborted: false, // 取消标志（功能5）
   onlyUnmarked: false, // 仅导出未标记行（功能4）
-  imgQuality: 'orig', // orig=高清原图(本地直连飞书·默认推荐) / thumb=缩略图(最快·最稳)
+  imgQuality: 'orig', // orig=高清原图(直连飞书CDN) / thumb=缩略图(不依赖CDN,最稳)
   imgCache: {},      // 会话内已取图缓存（断点续传/仅补缺失），键=质量|字段|记录|序号
   failPairs: new Set(),  // 本次导出失败图片键集合（供「仅重试失败项」）
   failRows: new Set(),   // 本次导出存在失败图片的记录 id
@@ -82,7 +82,10 @@ function humanSize(n) {
 }
 // 累计已取图字节（base64 长度 × 3/4 ≈ 解码后字节数），用于实时体积预估
 function addImgBytes(img) {
-  if (img && img.base64) state.fetchBytes = (state.fetchBytes || 0) + Math.ceil(img.base64.length * 3 / 4);
+  if (!img) return;
+  // 图片被字节化后 base64 已释放，此时按实际字节数统计
+  const n = img.bytes ? img.bytes.length : (img.base64 ? Math.ceil(img.base64.length * 3 / 4) : 0);
+  if (n) state.fetchBytes = (state.fetchBytes || 0) + n;
 }
 // 带超时的 Promise 包装：超过 ms 即 reject，避免飞书 SDK 调用挂起导致整批导出永久卡死
 function withTimeout(promise, ms, label) {
@@ -904,6 +907,51 @@ async function loadData() {
 }
 
 // ---------- 图片处理 ----------
+
+// ---------- 图片字节化（加速「生成文件」阶段：跳过 JSZip 的 base64 解码）----------
+// 实测依据（bench/bench-write.mjs，200 行 × 200KB 不可压缩数据）：
+//   · 现状（base64 交给 ExcelJS/JSZip）        4986ms
+//   · 仅修复 STORE 参数层级                    2104ms
+//   · STORE + 传字节给 addImage                 507ms   ← 本段改动
+// JSZip 吃 base64 字符串时，内部要做 atob + 逐字节转换，是「取图 100% 之后」的最大单项开销。
+// 这里在写行时做一次单向 base64→Uint8Array，并立即释放 base64 引用：
+//   · 速度：JSZip 直接吃二进制，不再解码
+//   · 内存：释放后常驻为 1x 字节（低于改造前的 1.33x 字符串 + 1x 解码缓冲）
+// 边界：只做「base64 → 字节」单向一次转换，不做 dataUrl↔bytes 来回转换
+//      （历史上曾因来回重编码导致导出 100% 卡死，此处刻意规避）。
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const n = bin.length;
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+// 取图片字节：首次调用时转换并缓存，随后释放 base64（压低内存峰值）。
+// 转换失败时保留 base64 并返回 null，上层回退到原 base64 路径。
+function imgBytes(img) {
+  if (!img) return null;
+  if (img.bytes) return img.bytes;
+  if (!img.base64) return null;
+  try {
+    const b = b64ToBytes(img.base64);
+    img.bytes = b;
+    img.base64 = null; // 字节已就位，释放 base64 字符串引用
+    return b;
+  } catch (e) {
+    return null;
+  }
+}
+// 内容指纹（O(1) 采样，不遍历全量字节）：总长 + 头/中/尾各 1KB。
+// 用于导出时识别「同一张图被多行引用」，只在 Excel 内复用同一份 media。
+// 长度相同且 3KB 采样完全一致的两张图，实际可视为同一文件（碰撞概率可忽略）。
+function imgFingerprint(bytes) {
+  if (!bytes || !bytes.length) return '';
+  const n = bytes.length;
+  const seg = (s, e) => String.fromCharCode.apply(null, bytes.subarray(s, e));
+  const mid = Math.max(0, (n >> 1) - 512);
+  return n + '|' + seg(0, Math.min(1024, n)) + '|' + seg(mid, Math.min(n, mid + 1024)) + '|' + seg(Math.max(0, n - 1024), n);
+}
+
 function mimeToExt(mime) {
   const map = {
     'image/png': 'png', 'image/jpeg': 'jpeg', 'image/jpg': 'jpeg',
@@ -1186,6 +1234,15 @@ async function fetchImageBytesWithRetry(url, { retries = 3, timeoutMs = 8000, ba
   );
 }
 
+// 取图失败时的错误细节提取（飞书 SDK 错误码/HTTP 状态/msg），用于定位根因（token/权限/网络/限流）
+function errDetail(e) {
+  if (!e) return 'null';
+  const o = {};
+  for (const k of ['code', 'status', 'statusCode', 'errno', 'message', 'name']) { if (e[k] != null) o[k] = e[k]; }
+  let s = Object.keys(o).length ? JSON.stringify(o) : String(e);
+  if (e && e.stack) s += ' | ' + String(e.stack).split('\n').slice(0, 2).join(' ');
+  return s.slice(0, 500);
+}
 // 抓取一个附件字段单元格的全部图片：
 //  - 缩略图模式（默认·最快）：直接取飞书缩略图 base64，不跨域、不需要任何代理、不逐个联网
 //  - 高清原图模式：本地直连飞书附件 URL（不借助代理），失败再回退缩略图
@@ -1245,7 +1302,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           if (r && r.length) { thumbs = r; break; }
           else log('  缩略图质量 ' + qq + ' 返回空（tokens=' + needTokens.length + '）', 'warn');
         } catch (e) {
-          log('  缩略图质量 ' + qq + ' 失败：' + (e && e.message ? e.message : e), 'warn');
+          log('  缩略图质量 ' + qq + ' 失败：' + errDetail(e), 'warn');
         }
       }
       if (thumbs) {
@@ -1401,7 +1458,7 @@ async function exportExcel(options) {
     if (!fieldIds.length) { log('请至少选择一个字段。', 'warn'); return finishExportUI(); }
     const plan = buildColumnPlan(fieldIds);
     const DISPLAY_W = Math.max(40, Math.min(400, parseInt($('#imgWidth').value, 10) || 50));
-    state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(不依赖CDN,最稳) / orig=高清原图(直连飞书CDN)
     state.stat = { orig: 0, thumb: 0, embedded: 0 };
     state.fetchStat = { ok: 0, fail: 0, fallback: 0, empty: 0, skipped: 0 }; // 交互3；empty=空单元格；skipped=视频/非图片跳过
     state.aborted = false; // 功能5
@@ -1446,6 +1503,10 @@ async function exportExcel(options) {
     });
     ws.getRow(1).height = 15;
 
+    // 内容指纹 → ExcelJS imageId：同一张图被多行引用时只嵌一份 media（省体积、也省打包时间）
+    const mediaSeen = new Map();
+    let mediaReused = 0; // 命中复用（未重复嵌入）的图片张数，用于完成日志
+
     // 单行写入（内部调用 ExcelJS，保持单线程避免竞态）
     const writeRow = (idx, rec, attachCache) => {
       const rowNum = idx + 2;
@@ -1456,12 +1517,26 @@ async function exportExcel(options) {
         if (c.isAttachment) {
           const imgs = attachCache[c.fieldId] || [];
           const img = imgs[c.imgIndex];
-          if (img && img.base64 && img.width && img.height) {
+          if (img && img.width && img.height) {
             const Wd = DISPLAY_W;
             const Hd = Math.max(1, Math.round(Wd * img.height / Math.max(1, img.width)));
             try {
-              const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
-              ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
+              const bytes = imgBytes(img);
+              if (bytes) {
+                const fp = imgFingerprint(bytes);
+                let imgId = mediaSeen.get(fp);
+                if (imgId === undefined) {
+                  imgId = wb.addImage({ buffer: bytes, extension: img.extension });
+                  mediaSeen.set(fp, imgId);
+                } else {
+                  mediaReused++; // 同一张图已在 media 中，本次仅新增引用锚点
+                }
+                ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
+              } else if (img.base64) {
+                // 字节化失败的兜底：退回原 base64 嵌入路径
+                const imgId = wb.addImage({ base64: img.base64, extension: img.extension });
+                ws.addImage(imgId, { tl: { col: ci, row: idx + 1 }, ext: { width: Wd, height: Hd }, editAs: 'oneCell' });
+              }
             } catch (e) {
               log('  第 ' + rowNum + ' 行某图嵌入失败已跳过：' + e.message, 'warn');
             }
@@ -1549,15 +1624,28 @@ async function exportExcel(options) {
     setStatus('正在生成 Excel 文件（请稍候）…', 'warn'); // UI1：写文件阶段给出明确状态，避免 100% 后误以为卡死
     setProgressCount('正在生成文件…');
     log('正在写入文件…');
-    const buf = await wb.xlsx.writeBuffer({ compression: 'STORE' }); // STORE: 不对图片数据二次压缩（jpg/png 已压缩，DEFLATE 几乎不减体积却巨耗 CPU），writeBuffer 极快、主线程不卡；不降图片分辨率
+    // 生成文件的两处关键提速（实测合计约 -92%，依据见 bench/bench-write.mjs）：
+    // ① compression 必须写在 options.zip 内才生效。ExcelJS 的 write() 只把 options.zip 传给 ZipWriter，
+    //    此前写在顶层的 compression:'STORE' 一直没生效，实际仍在用默认 DEFLATE 去压缩已压缩的 jpg/png——
+    //    几乎不减体积却白烧大量 CPU，这是「100% 之后慢」的主因。
+    // ② 不再用 writeBuffer：它内部固定走 StreamBuf（把产出按 1MB 切块拷贝一遍，read() 时再 Buffer.concat 一遍），
+    //    大文件等于被完整多拷贝两次。改走 write(sink) 后，StreamBuf 在任何数据到达前就已 pipe 上目标，
+    //    于是把 JSZip 产出的整块 buffer 零拷贝直接转给我们（StreamBuf 自定义的 pipe 只要求目标有 write(chunk, cb) 与 end()）。
+    const chunks = [];
+    const sink = {
+      write(chunk, cb) { chunks.push(chunk); if (typeof cb === 'function') cb(); return true; },
+      end() {},
+    };
+    await wb.xlsx.write(sink, { zip: { compression: 'STORE' } });
     setStatus('已生成，正在下载', 'ok');
     const name = makeXlsxName();
-    triggerDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
+    triggerDownload(new Blob(chunks, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     setProgress(100);
-    const imgTip = '；图片以浮动方式嵌入单元格（base64 内嵌、无需联网，WPS / Excel 各版本打开均可见）。';
-    const fileSize = buf.byteLength;
+    const imgTip = '；图片以浮动方式嵌入单元格（字节内嵌、无需联网，WPS / Excel 各版本打开均可见）。';
+    const fileSize = chunks.reduce((a, c) => a + (c.byteLength != null ? c.byteLength : (c.length || 0)), 0);
     const partialTag = (state.aborted || state.confirmedCancel) ? '（已取消，部分导出）' : '';
     log('导出完成' + partialTag + '：' + name + '（图片：原图 ' + state.stat.orig + ' / 缩略图 ' + state.stat.thumb + ' · 文件 ' + humanSize(fileSize) + imgTip + '）', 'ok');
+    if (mediaReused > 0) log('检测到重复图片 ' + mediaReused + ' 处，已只嵌入一份（相同图片在 Excel 内复用，省体积也省打包时间）。', 'ok');
     if (skippedEmptyRows > 0) log('已跳过 ' + skippedEmptyRows + ' 行（仅选图片列且图片全空，无内容可导出）', 'warn');
     if (state.fetchStat.empty > 0) log('空图片单元格 ' + state.fetchStat.empty + ' 个已识别（不计失败、不重试）', 'info');
     if (state.stat.orig === 0 && state.stat.thumb > 0 && state.imgQuality === 'orig') {
@@ -1826,7 +1914,7 @@ async function exportZip(options) {
     state.failPairs = new Set();
     state.failRows = new Set();
     updateRetryButton(); // 导出中先把重试按钮置灰（防误触，结束后按结果点亮/灰掉）
-    state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(最快) / orig=高清原图(直连飞书)
+    state.imgQuality = (getSeg('imgQuality') || 'orig'); // thumb=缩略图(不依赖CDN,最稳) / orig=高清原图(直连飞书CDN)
 
     hideDoneCard(); resetLiveThumbs(); // 新一轮导出：清掉上次的完成卡片与缩略图流
     showCancel(); showProgress(); setProgress(0);
@@ -1890,7 +1978,11 @@ async function exportZip(options) {
             const img = imgs[m];
             if (!img) continue;
             const fname = uniq(base + '__' + safe(f.name) + '_' + (m + 1) + '.' + img.extension);
-            zip.file(fname, img.base64, { base64: true });
+            // 字节化后直接交给 JSZip，跳过它内部缓慢的 base64 解码；转换失败则回退原 base64 路径
+            const zb = imgBytes(img);
+            if (zb) zip.file(fname, zb);
+            else if (img.base64) zip.file(fname, img.base64, { base64: true });
+            else continue; // 字节与 base64 都没有，无内容可写
             fileCount++;
           }
         }
