@@ -11,7 +11,19 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830e';
+const APP_VERSION = '20260830f';
+
+// 页面加载即自报版本（无需导出即可核对飞书是否加载到新代码）：副标题后缀 + 状态栏 + 运行日志首行。
+// 这样用户打开插件就能看到版本，不必等导出到完成卡；若飞书加载的是旧缓存，这里就不会出现新版本号。
+(function () {
+  try {
+    const sub = document.querySelector('.subtitle');
+    if (sub) sub.textContent = (sub.textContent || '').replace(/ · v\d+$/, '') + ' · v' + APP_VERSION;
+    const st = document.getElementById('statusText');
+    if (st) st.textContent = '已加载插件 v' + APP_VERSION;
+  } catch (e) {}
+  if (typeof log === 'function') log('[插件版本] ' + APP_VERSION + ' 已加载（若飞书实际表现与此版本不符，说明飞书加载的是旧缓存：需在飞书插件设置里改 URL 或重新保存以强制刷新）');
+})();
 
 // 飞书 SDK 1.0.2 实际并未导出 ImageQuality 枚举（已核对 dist 包），运行时 state.ImageQuality 恒为兜底常量。
 // 为兼容「未来 SDK 真导出该枚举且键名大小写不同（High/MAX 等）」的情况，这里做大小写容错解析：
