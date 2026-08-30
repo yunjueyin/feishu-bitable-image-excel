@@ -702,9 +702,43 @@ body {
   border-bottom: 1px solid var(--divider);
   font-size: 15px; font-weight: 600;
 }
-.modal-head .ico { width: 18px; height: 18px; color: var(--blue); }
+.modal-head .icon-btn .ico { width: 18px; height: 18px; color: var(--blue); }
 .modal-head .icon-btn { margin-left: auto; }
 .modal-body { padding: 12px 18px 22px; overflow: auto; }
+
+/* ---------- 设置弹窗：分组卡片 ---------- */
+.settings-body { display: flex; flex-direction: column; gap: 12px; }
+.set-group {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.set-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.set-group-title { font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: 0.3px; }
+.set-group-sub { font-size: 12px; color: var(--text-muted); }
+.set-group-body { display: flex; flex-direction: column; gap: 10px; }
+
+/* 方案：保存行（输入 + 按钮） */
+.scheme-save { display: flex; gap: 8px; align-items: center; }
+.scheme-save .mini-input.wide { flex: 1; min-width: 0; width: auto; }
+
+/* 分组内表单行重置：去掉原本的分隔线，分层交给分组卡片 */
+.set-group .form-row { padding: 0; border-bottom: none; gap: 6px; }
+.set-group .form-row > label { font-size: 13.5px; }
+
+/* 复用 .switch-row 做范围勾选：在分组卡片内去掉独立卡片感，避免「盒中盒」 */
+.set-group .switch-row {
+  margin-bottom: 0;
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.set-group .switch-row + .switch-row {
+  border-top: 1px solid var(--divider);
+}
+.set-group .switch-row:hover { background: transparent; }
 
 /* ---------- 导出前预览缩略图 ---------- */
 .preview-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
@@ -723,7 +757,7 @@ body {
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 20px 20px; }
 .modal-foot .btn { flex: 0 0 auto; min-width: 96px; }
 #confirmModal .modal-head { border-bottom: none; padding-bottom: 4px; }
-#confirmModal .modal-head .ico { color: var(--warn); }
+#confirmModal .modal-head .ico-tile .ico { color: #fff; }
 
 /* ---------- 成功 toast ---------- */
 .toast {
@@ -769,8 +803,6 @@ body {
 .actions .empty-hint { width: 100%; margin: 0 0 4px; }
 
 /* ---------- 导出方案 ---------- */
-.scheme-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-.scheme-row .mini-input.wide { flex: 1; min-width: 0; }
 .mini-select.wide, .mini-input.wide { width: 100%; max-width: 100%; min-width: 0; }
 .scheme-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 
