@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830h';
+const APP_VERSION = '20260830i';
 
 // 页面加载即自报版本（无需导出即可核对飞书是否加载到新代码）：仅写入副标题后缀 + 运行日志首行。
 // 注意：绝不改写 #statusText —— 那是 init() 显示「已连接 / 错误」的真实状态栏。先前版本在加载时把
@@ -2297,7 +2297,11 @@ function promptFailRetry({ fail, rowsText, name, size, imgCount, orig, thumb, do
 function openSettings() { $('#settingsModal').hidden = false; renderSchemeList(); }
 function closeSettings() { $('#settingsModal').hidden = true; }
 
-window.addEventListener('DOMContentLoaded', () => {
+// 整个入口块改为具名函数，由底部 readyState 守卫驱动。
+// 原因：飞书 webview 里 app.js（type=module，延迟执行）可能在 DOMContentLoaded 已触发之后才执行，
+// 若沿用 window.addEventListener('DOMContentLoaded', …) 包裹，回调永不触发 → 所有按钮监听不绑定、
+// 初始化不启动，表现为「一直正在初始化 + 按钮有动画但无反应」。
+function bootstrap() {
   $('#btnLoad').addEventListener('click', loadData);
   $('#btnExport').addEventListener('click', exportExcel);
   $('#btnExportZip').addEventListener('click', exportZip);
@@ -2399,13 +2403,7 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     ensureJSZip(); // 后台预载，不阻塞
   }
-  // 修复 Feishu webview 内脚本执行时 DOMContentLoaded 已触发导致监听器永不执行、
-  // 插件一直卡在"正在初始化…"的问题：已 ready 则直接启动，否则监听。
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startApp);
-  } else {
-    startApp();
-  }
+  startApp(); // bootstrap 已由底部 readyState 守卫保证 DOM 就绪，直接启动
   // 兜底看门狗：若 25 秒内状态仍卡在 idle，提示用户网络/SDK 无响应
   setTimeout(() => {
     const statusEl = $('#status');
@@ -2414,4 +2412,20 @@ window.addEventListener('DOMContentLoaded', () => {
       log('[诊断] 初始化 watchdog 触发：25 秒内未完成', 'warn');
     }
   }, 25000);
-});
+}
+
+// 入口调度：DOM 已就绪则立即执行，否则等 DOMContentLoaded；
+// 外层 try/catch 确保内部任何异常都能被看见（否则会静默卡在"正在初始化…"）。
+function runBootstrap() {
+  try {
+    bootstrap();
+  } catch (e) {
+    setStatus('插件初始化脚本异常：' + e.message, 'err');
+    log('[诊断] bootstrap 异常：' + (e && e.stack ? e.stack : e.message), 'err');
+  }
+}
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', runBootstrap);
+} else {
+  runBootstrap();
+}
