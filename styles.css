@@ -851,3 +851,26 @@ body {
 .toast-close:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
 .toast-close .ico { width: 13px; height: 13px; stroke-width: 2.2; }
 .toast-icon.err { background: var(--err); }
+
+/* ---------- 多表批量导出：表选择多选列表 ---------- */
+.table-multiselect { display: flex; flex-direction: column; gap: 6px; }
+.table-multiselect.hidden { display: none; }
+.multi-bar { display: flex; gap: 12px; margin-bottom: 2px; }
+.table-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  cursor: default; transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.table-row:hover { border-color: var(--accent); }
+.table-row input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex: none; }
+.table-row .tname {
+  font-size: 13.5px; font-weight: 500; color: var(--text);
+  cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px;
+}
+.table-row .tname:hover { color: var(--accent); }
+.table-row .tcur {
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft, rgba(45, 127, 249, 0.12));
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+}

@@ -72,7 +72,9 @@
 
     <div id="progressBox" class="progress-box hidden">
       <div class="progress-meta">
+        <span id="progressStage" class="muted xs">准备中</span>
         <span id="progressPct">0%</span>
+        <span id="progressEta" class="muted xs"></span>
         <span id="progressCount"></span>
         <button id="btnCancel" class="mini-cancel hidden" title="取消导出" aria-label="取消导出">取消</button>
       </div>
@@ -85,8 +87,8 @@
         <span class="card-title"><span class="ico-tile t-blue"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-table"/></svg></span>数据表</span>
         <span id="count" class="tag"></span>
       </div>
-      <select id="tableSelect" class="select hidden"></select>
-      <p class="muted xs">选择要导出的数据表（切换后请点下方「加载数据」）。</p>
+      <div id="tableSelect" class="table-multiselect hidden"></div>
+      <p class="muted xs">勾选要导出的数据表（可多选）→ 一次导出到一个工作簿的多个 sheet；字段勾选沿用「参考表」的列，点表名可切换参考表。</p>
     </section>
 
     <section class="card card-collapsible">
