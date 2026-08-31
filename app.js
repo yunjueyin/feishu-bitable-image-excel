@@ -11,7 +11,7 @@ const THUMB_QUALITY_HIGH = 2560; // 尝试高于 SDK MAX(1280) 的缩略图质�
 // 插件版本号（自报诊断用）：每次发布改这个常量 + 同步 index.html 的 ?v= 缓存击穿串。
 // 完成卡片会显示它；运行日志在每次导出开始也会打印。用途：一眼确认「飞书实际跑的是哪一份代码」，
 // 避免「本地已修、线上旧包/旧缓存」导致的「修了还是没修」式扯皮。
-const APP_VERSION = '20260830v';
+const APP_VERSION = '20260831w';
 
 // 【重要】此处曾有一版「页面加载即自报版本」的 IIFE（写副标题 + 状态栏 + 调 log），
 // 自 f 版引入后插件即开始异常（数据表不加载 → 后续演变为「一直正在初始化 + 按钮无反应」）。
@@ -1581,10 +1581,17 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     if (/\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|3gp)$/.test(name)) return false;
     return true; // 无法判断：保守当作图片尝试（保持原兼容行为）
   };
-  // 保留每张图在「原始附件数组」中的位置（origIdx），以便返回数组与 buildColumnPlan 的 imgIndex 对齐
-  // （含视频/非图片的单元格：视频不取图，但占一个附件槽位，必须原样留 null，否则后续图片会错位）。
+  // imgIndex 的语义 = 「有 token 附件中的序号」（与 buildColumnPlan 用 maxAttach=
+  // cell.filter(x=>x.token).length 预留的列数严格一致）。因此返回数组的下标必须用
+  // 「有 token 序号 pos」落位：跳过无 token 的占位附件（损坏/上传中，不计入 maxAttach，
+  // 绝不能占一个列序号，否则后续图片整体偏移错位），有 token 的图片/视频各自占一个 pos。
   const imgEntries = [];
-  rawItems.forEach((x, idx) => { if (x && x.token && isImageItem(x)) imgEntries.push({ token: x.token, origIdx: idx }); });
+  let pos = 0;
+  for (const x of rawItems) {
+    if (!x || !x.token) continue;        // 无 token 占位：不占 token 序号（与 maxAttach 一致）
+    if (isImageItem(x)) imgEntries.push({ token: x.token, pos });
+    pos++;                                // 有 token 的附件（图片或视频）都占一个 token 序号
+  }
   const tokens = imgEntries.map((e) => e.token);
   if (!tokens.length) {
     // 空单元格 / 视频单元格：无有效图片 token。直接返回——不取图、不计失败、不进「仅重试失败项」。
@@ -1595,18 +1602,19 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     }
     return [];
   }
-  // 返回数组长度 = 原始附件数（含视频槽位），图片按 origIdx 落位、视频槽位留 null，
-  // 从而与 buildColumnPlan 用 maxAttach 预留的 imgIndex（=原始附件位置）严格对齐，杜绝错位。
-  const empty = () => new Array(rawItems.length).fill(null);
+  // 返回数组长度 = 有 token 附件数（含视频占位的 pos），图片按 pos 落位、视频/无图位置留 null，
+  // 与 buildColumnPlan 用 maxAttach 预留的 imgIndex（=有 token 序号）严格对齐，杜绝错位。
+  const outLen = pos;
+  const empty = () => new Array(outLen).fill(null);
   const out = empty();
   const q = state.imgQuality;
 
   // 会话缓存（断点续传 / 仅补缺失）：键含 质量|字段|记录|原始序号，切换质量即失效
   for (let i = 0; i < imgEntries.length; i++) {
-    const k = q + '|' + fieldId + '|' + recordId + '|' + imgEntries[i].origIdx;
+    const k = q + '|' + fieldId + '|' + recordId + '|' + imgEntries[i].pos;
     if (state.imgCache[k]) {
       const cached = state.imgCache[k];
-      out[imgEntries[i].origIdx] = cached;
+      out[imgEntries[i].pos] = cached;
       // 缓存命中也要计入 state.stat：该统计每次导出独立重置，不能因为缓存就让完成卡显示 0/0
       if (state.stat) {
         const src = cached._source || (q === 'orig' ? 'orig' : 'thumb');
@@ -1616,7 +1624,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     }
   }
   const need = [];
-  for (let i = 0; i < imgEntries.length; i++) if (!out[imgEntries[i].origIdx]) need.push(i);
+  for (let i = 0; i < imgEntries.length; i++) if (!out[imgEntries[i].pos]) need.push(i);
   log('[诊断] 单元格 ' + recordId + '/' + fieldId + ': tokens=' + tokens.length + ' 缓存命中=' + out.filter(Boolean).length + '/' + tokens.length + ' 待取=' + need.length + ' stat=' + JSON.stringify(state.stat));
   if (!need.length) return out; // 全部命中缓存，直接返回（仍会计入 state.stat）
 
@@ -1647,7 +1655,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
           if (thumbs[k] != null) {
             try {
               const im = await thumbToExcelImage(thumbs[k]);
-              if (im) { out[imgEntries[idx].origIdx] = im; im._source = 'thumb'; addImgBytes(im); thumbGot++; await yieldToMain(); }
+              if (im) { out[imgEntries[idx].pos] = im; im._source = 'thumb'; addImgBytes(im); thumbGot++; await yieldToMain(); }
             } catch (e) {}
           }
         }));
@@ -1664,7 +1672,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
     //    飞书 CDN 偶尔 CORS 拦截导致下载失败，属正常，失败即跳过、不刷屏。
     if (state.aborted) return out; // 取消：缩略图已得则直接返回，不再走原图兜底
     const stillMissing = [];
-    for (let i = 0; i < imgEntries.length; i++) if (!out[imgEntries[i].origIdx]) stillMissing.push(i);
+    for (let i = 0; i < imgEntries.length; i++) if (!out[imgEntries[i].pos]) stillMissing.push(i);
     if (stillMissing.length) {
       let urls = [];
       try {
@@ -1690,7 +1698,7 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
               // 缩略图模式的兜底：原图取不到时缩放至 1200px 安全网，避免空图（体积可控）。
               im = await blobToExcelImageResized(await resp.blob(), 1200);
             }
-            if (im) { out[imgEntries[idx].origIdx] = im; im._source = 'orig'; addImgBytes(im); if (q === 'orig') origDirectGot++; else origFallbackGot++; await yieldToMain(); }
+            if (im) { out[imgEntries[idx].pos] = im; im._source = 'orig'; addImgBytes(im); if (q === 'orig') origDirectGot++; else origFallbackGot++; await yieldToMain(); }
           } catch (e) { /* 取不到原图：留空 */ }
         }));
       }
@@ -1698,9 +1706,9 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
 
     // 写入会话缓存（供断点续传 / 仅补缺失 / 仅重试失败项复用）：键用原始序号，与读取侧一致
     for (let i = 0; i < imgEntries.length; i++) {
-      if (out[imgEntries[i].origIdx]) {
-        const k = q + '|' + fieldId + '|' + recordId + '|' + imgEntries[i].origIdx;
-        state.imgCache[k] = out[imgEntries[i].origIdx];
+      if (out[imgEntries[i].pos]) {
+        const k = q + '|' + fieldId + '|' + recordId + '|' + imgEntries[i].pos;
+        state.imgCache[k] = out[imgEntries[i].pos];
       }
     }
 
@@ -1728,10 +1736,10 @@ async function fetchCellImages(fieldId, recordId, cellVal) {
   // 注意：结算以「图片条目」为单位（imgEntries），视频/非图片槽位不计入失败、不进重试。
   let miss = 0;
   for (let i = 0; i < imgEntries.length; i++) {
-    if (!out[imgEntries[i].origIdx]) {
+    if (!out[imgEntries[i].pos]) {
       miss++;
       if (!state.aborted) {
-        const k = q + '|' + fieldId + '|' + recordId + '|' + imgEntries[i].origIdx;
+        const k = q + '|' + fieldId + '|' + recordId + '|' + imgEntries[i].pos;
         state.failPairs.add(k);
         state.failRows.add(recordId);
       }
