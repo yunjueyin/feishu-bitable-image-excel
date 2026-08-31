@@ -1184,12 +1184,17 @@ async function loadTableIntoState(id) {
   // 多表循环里只取字段数据，不重建字段下拉（避免标记字段选择被重置）。
   // 非参考表必须用「该表自身视图」列序，禁用全局 getActiveView()（会取到错误表的视图）。
   await loadFieldsData(isActiveTable);
-  // 「按序导出所有字段」：每张表按其视图（筛选/排序）拉取全部数据；
-  // 参考表用当前激活视图，其他表回退到其首个网格视图（保证按该表自己的筛选/排序，而非错误表的）。
+  // 视图顺序修复：多表导出必须与单表 loadData 行为对齐——默认按「该表自己的视图（筛选/排序）」
+  // 拉取记录（参考表用当前激活视图，其他表回退首个网格视图）。否则不带 viewId 时飞书返回的是
+  // 底层存储顺序（官方不保证顺序），整行乱序（用户实测：自动编号 1-158 全乱）。
+  // 仅当用户勾选「忽略筛选/排序 · 导出全部记录」时才不带视图，与单表语义一致。
   let viewId = null;
-  if (state.exportAllViewFields) {
+  const ignoreViewChecked = !!(($('#ignoreView') || {}).checked);
+  if (!ignoreViewChecked) {
     viewId = await getTableActiveOrFirstGridViewId(table, isActiveTable);
-    if (viewId) log('表「' + state.tableName + '」按当前视图（筛选/排序）导出全部字段与数据', 'info');
+    if (viewId) log('表「' + state.tableName + '」按其视图（筛选/排序）顺序拉取记录' + (state.exportAllViewFields ? '，并导出全部字段与数据' : ''), 'info');
+  } else {
+    log('表「' + state.tableName + '」已忽略视图筛选/排序，按全部记录导出', 'info');
   }
   const all = [];
   let pageToken; let hasMore = true; let page = 0;
